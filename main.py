@@ -17,10 +17,8 @@ from docx import Document
 import tempfile
 import os
 
-# Configure page FIRST
 st.set_page_config(page_title="AI Plagiarism Detector", layout="wide", page_icon="🔍")
 
-# NLTK setup
 @st.cache_resource
 def download_nltk_data():
     try:
@@ -34,7 +32,6 @@ def download_nltk_data():
 
 download_nltk_data()
 
-# Stylometry class
 class StylometricAnalyzer:
     def __init__(self):
         self.features = {}
@@ -467,38 +464,41 @@ def main():
             )
             
             # Initialize session state
-            if 'extracted_text' not in st.session_state:
-                st.session_state.extracted_text = ""
-            if 'last_uploaded_file' not in st.session_state:
-                st.session_state.last_uploaded_file = None
+            if 'text_content' not in st.session_state:
+                st.session_state.text_content = ""
             
-            # Extract text when new file is uploaded
+            extracted_content = ""
+            
             if file1 is not None:
-                if st.session_state.last_uploaded_file != file1.name:
-                    st.session_state.last_uploaded_file = file1.name
+                with st.spinner("🔄 Extracting text..."):
+                    extracted_content = system.extract_text_from_file(file1)
+                
+                if extracted_content and len(extracted_content.strip()) > 0:
+                    st.success(f"✅ Extracted {len(extracted_content)} characters")
                     
-                    with st.spinner("🔄 Extracting text..."):
-                        extracted = system.extract_text_from_file(file1)
+                    # Button to load text
+                    if st.button("📥 Load Extracted Text into Editor", key="load_btn", type="secondary"):
+                        st.session_state.text_content = extracted_content
+                        st.rerun()
                     
-                    if extracted and len(extracted.strip()) > 0:
-                        st.success(f"✅ Extracted {len(extracted)} characters")
-                        st.session_state.extracted_text = extracted
-                        
-                        if file1.type in ["image/png", "image/jpeg", "image/jpg"]:
-                            with st.expander("View Uploaded Image"):
-                                st.image(file1, use_column_width=True)
-                    else:
-                        st.warning("⚠️ No text extracted")
-                        st.session_state.extracted_text = ""
+                    if file1.type in ["image/png", "image/jpeg", "image/jpg"]:
+                        with st.expander("View Uploaded Image"):
+                            st.image(file1, use_column_width=True)
+                else:
+                    st.warning("⚠️ No text extracted")
             
-            # Text area with extracted text
+            # Text area
             text1 = st.text_area(
                 "Or paste text directly", 
-                value=st.session_state.extracted_text,
+                value=st.session_state.text_content,
                 height=400, 
                 key="submission_text",
-                placeholder="Enter or upload student's assignment..."
+                placeholder="Enter student's assignment or click 'Load Extracted Text' button above..."
             )
+            
+            # Update session state when manually typing
+            if text1 != st.session_state.text_content:
+                st.session_state.text_content = text1
         
         with col2:
             st.subheader("Optional: Previous Work")
@@ -510,31 +510,32 @@ def main():
                 key="f2"
             )
             
-            if 'extracted_prev' not in st.session_state:
-                st.session_state.extracted_prev = ""
-            if 'last_prev_file' not in st.session_state:
-                st.session_state.last_prev_file = None
+            if 'prev_content' not in st.session_state:
+                st.session_state.prev_content = ""
+            
+            extracted_prev = ""
             
             if file2 is not None:
-                if st.session_state.last_prev_file != file2.name:
-                    st.session_state.last_prev_file = file2.name
+                with st.spinner("🔄 Extracting..."):
+                    extracted_prev = system.extract_text_from_file(file2)
+                
+                if extracted_prev and len(extracted_prev.strip()) > 0:
+                    st.success(f"✅ Extracted {len(extracted_prev)} characters")
                     
-                    with st.spinner("🔄 Extracting..."):
-                        extracted2 = system.extract_text_from_file(file2)
-                    
-                    if extracted2 and len(extracted2.strip()) > 0:
-                        st.success(f"✅ Extracted {len(extracted2)} characters")
-                        st.session_state.extracted_prev = extracted2
-                    else:
-                        st.session_state.extracted_prev = ""
+                    if st.button("📥 Load Previous Text", key="load_prev_btn", type="secondary"):
+                        st.session_state.prev_content = extracted_prev
+                        st.rerun()
             
             text2 = st.text_area(
                 "Or paste previous work", 
-                value=st.session_state.extracted_prev, 
+                value=st.session_state.prev_content, 
                 height=200, 
                 key="previous_text",
                 placeholder="Optional: Previous assignment..."
             )
+            
+            if text2 != st.session_state.prev_content:
+                st.session_state.prev_content = text2
             
             st.divider()
             st.markdown("**Detection Features:**")
@@ -550,7 +551,7 @@ def main():
             submission_text = text1.strip()
             
             if not submission_text or len(submission_text) < 10:
-                st.error("Please provide the assignment text.")
+                st.error("Please provide the assignment text. If you uploaded a file, click the 'Load Extracted Text' button first.")
             else:
                 with st.spinner("🔄 Analyzing originality..."):
                     paras = [p.strip() for p in submission_text.split('\n\n') if len(p.strip()) > 100]
@@ -640,30 +641,28 @@ def main():
                 name = st.text_input(f"Name", f"Student_{i+1}", key=f"n{i}")
                 file = st.file_uploader("Upload", type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], key=f"cf{i}")
                 
-                # Initialize session state for each student
-                if f'comp_text_{i}' not in st.session_state:
-                    st.session_state[f'comp_text_{i}'] = ""
-                if f'comp_file_{i}' not in st.session_state:
-                    st.session_state[f'comp_file_{i}'] = None
+                # Session state for comparison mode
+                if f'comp_extracted_{i}' not in st.session_state:
+                    st.session_state[f'comp_extracted_{i}'] = ""
                 
                 if file is not None:
-                    if st.session_state[f'comp_file_{i}'] != file.name:
-                        st.session_state[f'comp_file_{i}'] = file.name
+                    with st.spinner(f"Extracting {name}'s text..."):
+                        extracted = system.extract_text_from_file(file)
+                    
+                    if extracted:
+                        st.success(f"✅ {len(extracted)} chars")
                         
-                        with st.spinner(f"Extracting {name}'s text..."):
-                            text = system.extract_text_from_file(file)
+                        if st.button(f"📥 Load Text", key=f"load_comp_{i}", type="secondary"):
+                            st.session_state[f'comp_extracted_{i}'] = extracted
+                            st.rerun()
                         
-                        if text:
-                            st.success(f"✅ {len(text)} chars")
-                            st.session_state[f'comp_text_{i}'] = text
-                            
-                            if file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                                with st.expander("View"):
-                                    st.image(file, use_column_width=True)
+                        if file.type in ["image/png", "image/jpeg", "image/jpg"]:
+                            with st.expander("View"):
+                                st.image(file, use_column_width=True)
                 
                 text = st.text_area(
                     "Or paste", 
-                    value=st.session_state[f'comp_text_{i}'], 
+                    value=st.session_state[f'comp_extracted_{i}'], 
                     height=150, 
                     key=f"ctext{i}"
                 )
@@ -719,6 +718,12 @@ def main():
         3. Stylometric analysis (writing style)
         4. Novelty detection (sentence-level)
         5. Intrinsic detection (internal consistency)
+        
+        ### 📖 How to Use
+        
+        **Step 1:** Upload your file (PDF/DOCX/Image)
+        **Step 2:** Click "Load Extracted Text" button
+        **Step 3:** Click "Check Originality"
         
         ### 💡 Tips
         **For OCR:** Use good lighting, clear handwriting, no shadows
