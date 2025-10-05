@@ -92,7 +92,6 @@ class StylometricAnalyzer:
         
         return 1 / (1 + np.linalg.norm(f1 - f2))
 
-# Fingerprinting class
 class DocumentFingerprinter:
     def __init__(self, k=5, window_size=4):
         self.k = k
@@ -134,7 +133,6 @@ class DocumentFingerprinter:
         union = len(hashes1.union(hashes2))
         return intersection / union if union > 0 else 0.0
 
-# Novelty detector
 class NoveltyDetector:
     def __init__(self, model):
         self.model = model
@@ -162,7 +160,6 @@ class NoveltyDetector:
         
         return results
 
-# Main system
 class PlagiarismDetectionSystem:
     def __init__(self, performance_mode="balanced"):
         self.embedding_models = {
@@ -225,7 +222,6 @@ class PlagiarismDetectionSystem:
             return ""
     
     def extract_text_from_file(self, uploaded_file):
-        """Universal file handler"""
         if not uploaded_file:
             return ""
         
@@ -297,7 +293,6 @@ class PlagiarismDetectionSystem:
             'overall_score': 0.0
         }
         
-        # Semantic
         sub_emb = self.embedding_model.encode([submitted_text], show_progress_bar=False)[0]
         
         for i, ref in enumerate(reference_texts):
@@ -317,7 +312,6 @@ class PlagiarismDetectionSystem:
                 'combined_score': float(combined)
             }
         
-        # Stylometric
         sub_feat = self.stylometric_analyzer.extract_stylometric_features(submitted_text)
         
         if student_history:
@@ -331,14 +325,12 @@ class PlagiarismDetectionSystem:
             for k, v in sub_feat.items() if k != 'pos_distribution'
         }
         
-        # Fingerprint
         sub_fp = self.fingerprinter.get_fingerprint(submitted_text)
         for i, ref in enumerate(reference_texts):
             ref_fp = self.fingerprinter.get_fingerprint(ref)
             fp_sim = self.fingerprinter.compare_fingerprints(sub_fp, ref_fp)
             results['fingerprint_matching'][f'Reference_{i+1}'] = float(fp_sim)
         
-        # Novelty
         novelty_res = self.novelty_detector.detect_novel_sentences(submitted_text, reference_texts)
         novel_count = sum(1 for _, _, s, _ in novelty_res if s == "Novel")
         total_sent = len(novelty_res)
@@ -358,7 +350,6 @@ class PlagiarismDetectionSystem:
             ]
         }
         
-        # Intrinsic
         paragraphs = submitted_text.split('\n\n')
         if len(paragraphs) > 1:
             para_feats = [
@@ -379,7 +370,6 @@ class PlagiarismDetectionSystem:
                     'suspicious': avg < 0.6
                 }
         
-        # Overall
         sem_scores = [v['combined_score'] for v in results['semantic_similarity'].values()]
         fp_scores = list(results['fingerprint_matching'].values())
         
@@ -417,12 +407,7 @@ def create_visualization(results):
         cross = [results['semantic_similarity'][r]['cross_encoder_score'] for r in ref_names]
         combined = [results['semantic_similarity'][r]['combined_score'] for r in ref_names]
         
-        df = pd.DataFrame({
-            'Reference': ref_names,
-            'Bi-Encoder': bi,
-            'Cross-Encoder': cross,
-            'Combined': combined
-        })
+        df = pd.DataFrame({'Reference': ref_names, 'Bi-Encoder': bi, 'Cross-Encoder': cross, 'Combined': combined})
         st.dataframe(df, use_container_width=True)
     
     if results['fingerprint_matching']:
@@ -449,38 +434,10 @@ def create_visualization(results):
                 st.write(f"{color} **{detail['status']}** (Similarity: {detail['max_similarity']:.2%})")
                 st.write(f"_{detail['sentence']}_")
                 st.divider()
-    
-    if results['stylometric_analysis']:
-        st.subheader("📝 Writing Style")
-        if 'features' in results['stylometric_analysis']:
-            feat_df = pd.DataFrame([results['stylometric_analysis']['features']])
-            st.dataframe(feat_df, use_container_width=True)
-        
-        if 'consistency_with_history' in results['stylometric_analysis']:
-            cons = results['stylometric_analysis']['consistency_with_history']
-            st.metric("Style Consistency", f"{cons:.2%}")
-    
-    if results['intrinsic_detection']:
-        st.subheader("🔎 Intrinsic Detection")
-        avg = results['intrinsic_detection']['avg_style_consistency']
-        sus = results['intrinsic_detection']['suspicious']
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Internal Consistency", f"{avg:.2%}")
-        with col2:
-            status = "⚠️ Suspicious" if sus else "✅ Normal"
-            st.metric("Status", status)
 
 def main():
     st.title("🔍 Advanced Plagiarism Detection System")
     st.markdown("### Multilingual • OCR • PDF/DOCX/Images")
-    
-    # Initialize session state
-    if 'submitted_text' not in st.session_state:
-        st.session_state.submitted_text = ""
-    if 'previous_text' not in st.session_state:
-        st.session_state.previous_text = ""
     
     with st.sidebar:
         st.header("⚙️ Settings")
@@ -502,31 +459,44 @@ def main():
         
         with col1:
             st.subheader("Student Submission")
+            
             file1 = st.file_uploader(
                 "Upload Assignment (PDF/DOCX/Image)", 
                 type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], 
                 key="f1"
             )
             
-            if file1:
-                with st.spinner("🔄 Extracting text..."):
-                    extracted = system.extract_text_from_file(file1)
-                
-                if extracted:
-                    st.success(f"✅ Extracted {len(extracted)} characters")
-                    st.session_state.submitted_text = extracted
-                    
-                    if file1.type in ["image/png", "image/jpeg", "image/jpg"]:
-                        with st.expander("View Uploaded Image"):
-                            st.image(file1, use_column_width=True)
-                else:
-                    st.warning("⚠️ No text extracted. File may be empty.")
+            # Initialize session state
+            if 'extracted_text' not in st.session_state:
+                st.session_state.extracted_text = ""
+            if 'last_uploaded_file' not in st.session_state:
+                st.session_state.last_uploaded_file = None
             
+            # Extract text when new file is uploaded
+            if file1 is not None:
+                if st.session_state.last_uploaded_file != file1.name:
+                    st.session_state.last_uploaded_file = file1.name
+                    
+                    with st.spinner("🔄 Extracting text..."):
+                        extracted = system.extract_text_from_file(file1)
+                    
+                    if extracted and len(extracted.strip()) > 0:
+                        st.success(f"✅ Extracted {len(extracted)} characters")
+                        st.session_state.extracted_text = extracted
+                        
+                        if file1.type in ["image/png", "image/jpeg", "image/jpg"]:
+                            with st.expander("View Uploaded Image"):
+                                st.image(file1, use_column_width=True)
+                    else:
+                        st.warning("⚠️ No text extracted")
+                        st.session_state.extracted_text = ""
+            
+            # Text area with extracted text
             text1 = st.text_area(
                 "Or paste text directly", 
-                value=st.session_state.submitted_text, 
+                value=st.session_state.extracted_text,
                 height=400, 
-                key="t1",
+                key="submission_text",
                 placeholder="Enter or upload student's assignment..."
             )
         
@@ -540,19 +510,29 @@ def main():
                 key="f2"
             )
             
-            if file2:
-                with st.spinner("🔄 Extracting..."):
-                    extracted2 = system.extract_text_from_file(file2)
-                
-                if extracted2:
-                    st.success(f"✅ Extracted {len(extracted2)} characters")
-                    st.session_state.previous_text = extracted2
+            if 'extracted_prev' not in st.session_state:
+                st.session_state.extracted_prev = ""
+            if 'last_prev_file' not in st.session_state:
+                st.session_state.last_prev_file = None
+            
+            if file2 is not None:
+                if st.session_state.last_prev_file != file2.name:
+                    st.session_state.last_prev_file = file2.name
+                    
+                    with st.spinner("🔄 Extracting..."):
+                        extracted2 = system.extract_text_from_file(file2)
+                    
+                    if extracted2 and len(extracted2.strip()) > 0:
+                        st.success(f"✅ Extracted {len(extracted2)} characters")
+                        st.session_state.extracted_prev = extracted2
+                    else:
+                        st.session_state.extracted_prev = ""
             
             text2 = st.text_area(
                 "Or paste previous work", 
-                value=st.session_state.previous_text, 
+                value=st.session_state.extracted_prev, 
                 height=200, 
-                key="t2",
+                key="previous_text",
                 placeholder="Optional: Previous assignment..."
             )
             
@@ -567,13 +547,12 @@ def main():
             """)
         
         if st.button("🔍 Check Originality", type="primary"):
-            # Get text from text area (which now contains extracted text from session state)
-            submission_text = text1.strip() if text1 else ""
+            submission_text = text1.strip()
             
             if not submission_text or len(submission_text) < 10:
                 st.error("Please provide the assignment text.")
             else:
-                with st.spinner("🔄 Analyzing originality... This may take a moment."):
+                with st.spinner("🔄 Analyzing originality..."):
                     paras = [p.strip() for p in submission_text.split('\n\n') if len(p.strip()) > 100]
                     
                     if len(paras) < 2:
@@ -589,10 +568,9 @@ def main():
                     results = system.analyze_plagiarism(
                         submission_text, 
                         refs, 
-                        text2 if text2 and text2.strip() else None
+                        text2.strip() if text2 and text2.strip() else None
                     )
                     
-                    # Calculate originality
                     orig = 100.0
                     
                     if 'intrinsic_detection' in results and results['intrinsic_detection']:
@@ -616,7 +594,6 @@ def main():
                     
                     st.success("✅ Originality Check Complete!")
                     
-                    # Display results
                     col1, col2, col3 = st.columns(3)
                     with col1:
                         color = "🟢" if orig > 75 else "🟡" if orig > 50 else "🔴"
@@ -628,32 +605,31 @@ def main():
                         st.metric("Plagiarism Risk", risk)
                     
                     st.divider()
-                    
-                    # Interpretation
                     st.subheader("📊 Interpretation")
+                    
                     if orig > 90:
-                        st.success("✅ **Excellent Originality** - This work appears to be highly original with minimal similarity to common sources.")
+                        st.success("✅ **Excellent Originality** - Highly original work")
                     elif orig > 75:
-                        st.info("ℹ️ **Good Originality** - This work shows good originality. Some similarities may be due to proper citations or common phrases.")
+                        st.info("ℹ️ **Good Originality** - Good original content")
                     elif orig > 50:
-                        st.warning("⚠️ **Moderate Concern** - This work contains notable similarities. Review the detailed analysis below.")
+                        st.warning("⚠️ **Moderate Concern** - Review needed")
                     else:
-                        st.error("🚨 **High Risk** - This work shows significant similarity indicators. Detailed review recommended.")
+                        st.error("🚨 **High Risk** - Detailed review required")
                     
                     st.divider()
                     create_visualization(results)
                     
-                    with st.expander("📥 Export Detailed Report"):
+                    with st.expander("📥 Export Report"):
                         export = results.copy()
                         export['originality_score'] = orig
                         export['similarity_index'] = 100 - orig
                         st.json(export)
     
     with tab2:
-        st.header("Compare Multiple Assignments (Collusion Detection)")
-        st.info("📌 Upload assignments in any format: PDF, DOCX, or **images** with OCR!")
+        st.header("Compare Multiple Assignments")
+        st.info("📌 Upload assignments in any format with OCR!")
         
-        n = st.number_input("Number of assignments to compare", 2, 20, 3)
+        n = st.number_input("Number of assignments", 2, 20, 3)
         
         assigns = {}
         cols = st.columns(2)
@@ -661,44 +637,55 @@ def main():
         for i in range(n):
             with cols[i % 2]:
                 st.subheader(f"Student {i+1}")
-                name = st.text_input(f"Student Name", f"Student_{i+1}", key=f"n{i}")
+                name = st.text_input(f"Name", f"Student_{i+1}", key=f"n{i}")
                 file = st.file_uploader("Upload", type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], key=f"cf{i}")
                 
-                text = ""
-                if file:
-                    with st.spinner(f"Extracting from {name}'s file..."):
-                        text = system.extract_text_from_file(file)
-                    if text:
-                        st.success(f"✅ {len(text)} chars")
-                        if file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                            with st.expander("View Image"):
-                                st.image(file, use_column_width=True)
+                # Initialize session state for each student
+                if f'comp_text_{i}' not in st.session_state:
+                    st.session_state[f'comp_text_{i}'] = ""
+                if f'comp_file_{i}' not in st.session_state:
+                    st.session_state[f'comp_file_{i}'] = None
                 
-                text = st.text_area("Or paste", value=text, height=150, key=f"ct{i}")
+                if file is not None:
+                    if st.session_state[f'comp_file_{i}'] != file.name:
+                        st.session_state[f'comp_file_{i}'] = file.name
+                        
+                        with st.spinner(f"Extracting {name}'s text..."):
+                            text = system.extract_text_from_file(file)
+                        
+                        if text:
+                            st.success(f"✅ {len(text)} chars")
+                            st.session_state[f'comp_text_{i}'] = text
+                            
+                            if file.type in ["image/png", "image/jpeg", "image/jpg"]:
+                                with st.expander("View"):
+                                    st.image(file, use_column_width=True)
+                
+                text = st.text_area(
+                    "Or paste", 
+                    value=st.session_state[f'comp_text_{i}'], 
+                    height=150, 
+                    key=f"ctext{i}"
+                )
                 
                 if text and text.strip():
                     assigns[name] = text
         
-        if st.button("🔍 Compare All Assignments", type="primary"):
+        if st.button("🔍 Compare All", type="primary"):
             if len(assigns) < 2:
-                st.error("Need at least 2 assignments to compare.")
+                st.error("Need at least 2 assignments")
             else:
-                with st.spinner("🔄 Comparing assignments..."):
+                with st.spinner("🔄 Comparing..."):
                     matrix, details, names = system.compare_multiple_assignments(assigns)
                     
-                    st.success("✅ Comparison Complete!")
+                    st.success("✅ Complete!")
                     
                     st.subheader("📊 Similarity Matrix")
-                    st.markdown("*Higher scores indicate potential copying/collusion*")
-                    
                     df = pd.DataFrame(matrix, columns=names, index=names)
-                    st.dataframe(
-                        df.style.background_gradient(cmap='Reds', vmin=0, vmax=1), 
-                        use_container_width=True
-                    )
+                    st.dataframe(df.style.background_gradient(cmap='Reds', vmin=0, vmax=1), use_container_width=True)
                     
                     st.divider()
-                    st.subheader("⚠️ Suspicious Pairs (Similarity > 50%)")
+                    st.subheader("⚠️ Suspicious Pairs (>50%)")
                     
                     sus = []
                     for k, v in details.items():
@@ -712,87 +699,31 @@ def main():
                     
                     if sus:
                         st.dataframe(pd.DataFrame(sus), use_container_width=True)
-                        st.warning(f"🚨 Found {len(sus)} suspicious pair(s) with high similarity!")
+                        st.warning(f"🚨 {len(sus)} suspicious pairs!")
                     else:
-                        st.success("✅ No suspicious similarities detected. All assignments appear unique.")
-                    
-                    with st.expander("📋 View All Comparisons"):
-                        for k, v in details.items():
-                            st.markdown(f"**{k}**")
-                            c1, c2, c3 = st.columns(3)
-                            with c1:
-                                st.metric("Combined", f"{v['combined_score']:.1%}")
-                            with c2:
-                                st.metric("Semantic", f"{v['semantic_similarity']:.1%}")
-                            with c3:
-                                st.metric("Fingerprint", f"{v['fingerprint_similarity']:.1%}")
-                            st.divider()
-                    
-                    with st.expander("📥 Export Report"):
-                        st.json({
-                            'matrix': df.to_dict(),
-                            'comparisons': details,
-                            'suspicious': sus
-                        })
+                        st.success("✅ All unique")
     
     with tab3:
-        st.header("About This System")
-        
+        st.header("About")
         st.markdown("""
         ### 🎯 Features
-        
-        - **80+ Languages** - Hindi, Arabic, Chinese, Japanese, Korean, Spanish, French, and more
-        - **OCR Support** - Handwritten and printed text extraction from images
-        - **Multiple Formats** - PDF, DOCX, PNG, JPG, JPEG
-        - **Two Detection Modes** - Originality check and assignment comparison
-        - **5 Novel Detection Methods** - Semantic, fingerprinting, stylometry, novelty, intrinsic
+        - **80+ Languages** supported
+        - **OCR** for handwritten/printed text
+        - **PDF, DOCX, Images** supported
+        - **No references needed** for originality
+        - **Compare multiple** assignments
         
         ### 🔬 Detection Methods
+        1. Semantic similarity (meaning)
+        2. Document fingerprinting (winnowing)
+        3. Stylometric analysis (writing style)
+        4. Novelty detection (sentence-level)
+        5. Intrinsic detection (internal consistency)
         
-        1. **Semantic Similarity** - Meaning-based comparison using transformer models
-        2. **Document Fingerprinting** - Winnowing algorithm for exact matching
-        3. **Stylometric Analysis** - Writing style pattern recognition
-        4. **Novelty Detection** - Sentence-level originality checking
-        5. **Intrinsic Detection** - Internal consistency analysis
+        ### 💡 Tips
+        **For OCR:** Use good lighting, clear handwriting, no shadows
         
-        ### 📊 How to Use
-        
-        **Originality Check Mode:**
-        - Upload ONE document (any format: PDF, DOCX, or image)
-        - System analyzes for plagiarism using AI
-        - No reference documents needed
-        - Get originality percentage (like Turnitin)
-        - Optional: Upload previous work for self-plagiarism check
-        
-        **Comparison Mode:**
-        - Upload 2-20 student assignments (any format)
-        - System compares all against each other
-        - Detects collusion and copying between students
-        - Color-coded similarity matrix
-        - Automatic suspicious pair detection
-        
-        ### 💡 Tips for Best Results
-        
-        **For OCR (Handwritten/Printed Images):**
-        - Use good lighting when photographing
-        - Ensure text is clear and legible
-        - Avoid shadows or glare
-        - Take photo straight-on (not at an angle)
-        - Works best with high-resolution images
-        
-        **Supported Languages:**
-        English, Spanish, French, German, Italian, Portuguese, Russian, Chinese (Simplified & Traditional), 
-        Japanese, Korean, Arabic, Hindi, Tamil, Telugu, Bengali, Marathi, Urdu, Thai, Vietnamese, and 60+ more!
-        
-        ### 🚀 Why This is Better
-        
-        Unlike traditional plagiarism checkers:
-        - **No database required** - AI-powered intrinsic analysis
-        - **OCR integrated** - Supports handwritten assignments
-        - **Multilingual** - Works with 80+ languages
-        - **Multiple formats** - PDF, DOCX, and images
-        - **Advanced algorithms** - 5 different detection methods
-        - **Free to use** - No subscription needed
+        **Supported Languages:** English, Spanish, French, German, Hindi, Arabic, Chinese, Japanese, Korean, and 70+ more!
         """)
 
 if __name__ == "__main__":
