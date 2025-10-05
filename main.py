@@ -16,19 +16,28 @@ import PyPDF2
 from docx import Document
 import tempfile
 import os
+import ssl
 
 st.set_page_config(page_title="AI Plagiarism Detector", layout="wide", page_icon="🔍")
 
 @st.cache_resource
 def download_nltk_data():
+    """Download NLTK data with SSL fix"""
     try:
-        nltk.data.find('tokenizers/punkt')
-    except:
+        _create_unverified_https_context = ssl._create_unverified_context
+    except AttributeError:
+        pass
+    else:
+        ssl._create_default_https_context = _create_unverified_https_context
+    
+    try:
         nltk.download('punkt', quiet=True)
         nltk.download('punkt_tab', quiet=True)
         nltk.download('averaged_perceptron_tagger', quiet=True)
         nltk.download('averaged_perceptron_tagger_eng', quiet=True)
         nltk.download('stopwords', quiet=True)
+    except Exception as e:
+        st.warning(f"NLTK download issue (will retry): {e}")
 
 download_nltk_data()
 
@@ -54,7 +63,7 @@ class StylometricAnalyzer:
                 'capital_letter_ratio': sum(1 for c in text if c.isupper()) / len(text) if text else 0,
                 'pos_distribution': dict(Counter([tag for _, tag in pos_tags]))
             }
-        except:
+        except Exception as e:
             return self._empty_features()
     
     def _empty_features(self):
@@ -136,26 +145,30 @@ class NoveltyDetector:
         self.novelty_threshold = 0.75
     
     def detect_novel_sentences(self, target_text, source_texts):
-        target_sentences = sent_tokenize(target_text)
-        all_source_sentences = []
-        for source in source_texts:
-            all_source_sentences.extend(sent_tokenize(source))
-        
-        if not all_source_sentences:
-            return [(s, 1.0, "Novel", 0.0) for s in target_sentences]
-        
-        target_emb = self.model.encode(target_sentences, show_progress_bar=False)
-        source_emb = self.model.encode(all_source_sentences, show_progress_bar=False)
-        
-        results = []
-        for sentence, emb in zip(target_sentences, target_emb):
-            sims = cosine_similarity([emb], source_emb)[0]
-            max_sim = np.max(sims)
-            novelty = 1 - max_sim
-            status = "Novel" if novelty > (1 - self.novelty_threshold) else "Redundant"
-            results.append((sentence, novelty, status, max_sim))
-        
-        return results
+        try:
+            target_sentences = sent_tokenize(target_text)
+            all_source_sentences = []
+            for source in source_texts:
+                all_source_sentences.extend(sent_tokenize(source))
+            
+            if not all_source_sentences:
+                return [(s, 1.0, "Novel", 0.0) for s in target_sentences]
+            
+            target_emb = self.model.encode(target_sentences, show_progress_bar=False)
+            source_emb = self.model.encode(all_source_sentences, show_progress_bar=False)
+            
+            results = []
+            for sentence, emb in zip(target_sentences, target_emb):
+                sims = cosine_similarity([emb], source_emb)[0]
+                max_sim = np.max(sims)
+                novelty = 1 - max_sim
+                status = "Novel" if novelty > (1 - self.novelty_threshold) else "Redundant"
+                results.append((sentence, novelty, status, max_sim))
+            
+            return results
+        except Exception as e:
+            # Fallback if tokenization fails
+            return [(target_text, 1.0, "Novel", 0.0)]
 
 class PlagiarismDetectionSystem:
     def __init__(self, performance_mode="balanced"):
@@ -290,95 +303,102 @@ class PlagiarismDetectionSystem:
             'overall_score': 0.0
         }
         
-        sub_emb = self.embedding_model.encode([submitted_text], show_progress_bar=False)[0]
-        
-        for i, ref in enumerate(reference_texts):
-            ref_emb = self.embedding_model.encode([ref], show_progress_bar=False)[0]
-            bi_sim = cosine_similarity([sub_emb], [ref_emb])[0][0]
+        try:
+            sub_emb = self.embedding_model.encode([submitted_text], show_progress_bar=False)[0]
             
-            try:
-                cross_sim = self.cross_encoder.predict([(submitted_text[:512], ref[:512])])[0]
-            except:
-                cross_sim = bi_sim
-            
-            combined = bi_sim * 0.6 + float(cross_sim) * 0.4
-            
-            results['semantic_similarity'][f'Reference_{i+1}'] = {
-                'bi_encoder_score': float(bi_sim),
-                'cross_encoder_score': float(cross_sim),
-                'combined_score': float(combined)
-            }
-        
-        sub_feat = self.stylometric_analyzer.extract_stylometric_features(submitted_text)
-        
-        if student_history:
-            hist_feat = self.stylometric_analyzer.extract_stylometric_features(student_history)
-            consistency = self.stylometric_analyzer.calculate_style_similarity(sub_feat, hist_feat)
-            results['stylometric_analysis']['consistency_with_history'] = float(consistency)
-            results['stylometric_analysis']['status'] = 'Consistent' if consistency > 0.7 else 'Inconsistent'
-        
-        results['stylometric_analysis']['features'] = {
-            k: float(v) if isinstance(v, (int, float, np.number)) else v 
-            for k, v in sub_feat.items() if k != 'pos_distribution'
-        }
-        
-        sub_fp = self.fingerprinter.get_fingerprint(submitted_text)
-        for i, ref in enumerate(reference_texts):
-            ref_fp = self.fingerprinter.get_fingerprint(ref)
-            fp_sim = self.fingerprinter.compare_fingerprints(sub_fp, ref_fp)
-            results['fingerprint_matching'][f'Reference_{i+1}'] = float(fp_sim)
-        
-        novelty_res = self.novelty_detector.detect_novel_sentences(submitted_text, reference_texts)
-        novel_count = sum(1 for _, _, s, _ in novelty_res if s == "Novel")
-        total_sent = len(novelty_res)
-        
-        results['novelty_detection'] = {
-            'novel_sentences': novel_count,
-            'total_sentences': total_sent,
-            'novelty_ratio': novel_count / total_sent if total_sent > 0 else 0,
-            'sentence_details': [
-                {
-                    'sentence': s[:100] + '...' if len(s) > 100 else s,
-                    'novelty_score': float(n),
-                    'status': st,
-                    'max_similarity': float(m)
+            for i, ref in enumerate(reference_texts):
+                ref_emb = self.embedding_model.encode([ref], show_progress_bar=False)[0]
+                bi_sim = cosine_similarity([sub_emb], [ref_emb])[0][0]
+                
+                try:
+                    cross_sim = self.cross_encoder.predict([(submitted_text[:512], ref[:512])])[0]
+                except:
+                    cross_sim = bi_sim
+                
+                combined = bi_sim * 0.6 + float(cross_sim) * 0.4
+                
+                results['semantic_similarity'][f'Reference_{i+1}'] = {
+                    'bi_encoder_score': float(bi_sim),
+                    'cross_encoder_score': float(cross_sim),
+                    'combined_score': float(combined)
                 }
-                for s, n, st, m in novelty_res
-            ]
-        }
-        
-        paragraphs = submitted_text.split('\n\n')
-        if len(paragraphs) > 1:
-            para_feats = [
-                self.stylometric_analyzer.extract_stylometric_features(p)
-                for p in paragraphs if len(p.strip()) > 50
-            ]
             
-            if len(para_feats) > 1:
-                variations = [
-                    float(self.stylometric_analyzer.calculate_style_similarity(para_feats[i], para_feats[i+1]))
-                    for i in range(len(para_feats) - 1)
+            sub_feat = self.stylometric_analyzer.extract_stylometric_features(submitted_text)
+            
+            if student_history:
+                hist_feat = self.stylometric_analyzer.extract_stylometric_features(student_history)
+                consistency = self.stylometric_analyzer.calculate_style_similarity(sub_feat, hist_feat)
+                results['stylometric_analysis']['consistency_with_history'] = float(consistency)
+                results['stylometric_analysis']['status'] = 'Consistent' if consistency > 0.7 else 'Inconsistent'
+            
+            results['stylometric_analysis']['features'] = {
+                k: float(v) if isinstance(v, (int, float, np.number)) else v 
+                for k, v in sub_feat.items() if k != 'pos_distribution'
+            }
+            
+            sub_fp = self.fingerprinter.get_fingerprint(submitted_text)
+            for i, ref in enumerate(reference_texts):
+                ref_fp = self.fingerprinter.get_fingerprint(ref)
+                fp_sim = self.fingerprinter.compare_fingerprints(sub_fp, ref_fp)
+                results['fingerprint_matching'][f'Reference_{i+1}'] = float(fp_sim)
+            
+            novelty_res = self.novelty_detector.detect_novel_sentences(submitted_text, reference_texts)
+            novel_count = sum(1 for _, _, s, _ in novelty_res if s == "Novel")
+            total_sent = len(novelty_res)
+            
+            results['novelty_detection'] = {
+                'novel_sentences': novel_count,
+                'total_sentences': total_sent,
+                'novelty_ratio': novel_count / total_sent if total_sent > 0 else 0,
+                'sentence_details': [
+                    {
+                        'sentence': s[:100] + '...' if len(s) > 100 else s,
+                        'novelty_score': float(n),
+                        'status': st,
+                        'max_similarity': float(m)
+                    }
+                    for s, n, st, m in novelty_res
+                ]
+            }
+            
+            paragraphs = submitted_text.split('\n\n')
+            if len(paragraphs) > 1:
+                para_feats = [
+                    self.stylometric_analyzer.extract_stylometric_features(p)
+                    for p in paragraphs if len(p.strip()) > 50
                 ]
                 
-                avg = np.mean(variations)
-                results['intrinsic_detection'] = {
-                    'avg_style_consistency': float(avg),
-                    'style_variations': variations,
-                    'suspicious': avg < 0.6
-                }
-        
-        sem_scores = [v['combined_score'] for v in results['semantic_similarity'].values()]
-        fp_scores = list(results['fingerprint_matching'].values())
-        
-        max_sem = max(sem_scores) if sem_scores else 0
-        max_fp = max(fp_scores) if fp_scores else 0
-        nov_ratio = results['novelty_detection']['novelty_ratio']
-        
-        overall = max_sem * 0.35 + max_fp * 0.35 + (1 - nov_ratio) * 0.30
-        
-        results['overall_score'] = float(overall)
-        results['risk_level'] = self._get_risk_level(overall)
-        results['originality_percentage'] = float((1 - overall) * 100)
+                if len(para_feats) > 1:
+                    variations = [
+                        float(self.stylometric_analyzer.calculate_style_similarity(para_feats[i], para_feats[i+1]))
+                        for i in range(len(para_feats) - 1)
+                    ]
+                    
+                    avg = np.mean(variations)
+                    results['intrinsic_detection'] = {
+                        'avg_style_consistency': float(avg),
+                        'style_variations': variations,
+                        'suspicious': avg < 0.6
+                    }
+            
+            sem_scores = [v['combined_score'] for v in results['semantic_similarity'].values()]
+            fp_scores = list(results['fingerprint_matching'].values())
+            
+            max_sem = max(sem_scores) if sem_scores else 0
+            max_fp = max(fp_scores) if fp_scores else 0
+            nov_ratio = results['novelty_detection']['novelty_ratio']
+            
+            overall = max_sem * 0.35 + max_fp * 0.35 + (1 - nov_ratio) * 0.30
+            
+            results['overall_score'] = float(overall)
+            results['risk_level'] = self._get_risk_level(overall)
+            results['originality_percentage'] = float((1 - overall) * 100)
+            
+        except Exception as e:
+            st.error(f"Analysis error: {str(e)}")
+            results['overall_score'] = 0.0
+            results['risk_level'] = "Error"
+            results['originality_percentage'] = 0.0
         
         return results
     
@@ -397,7 +417,7 @@ def load_system(performance_mode):
     return PlagiarismDetectionSystem(performance_mode)
 
 def create_visualization(results):
-    if results['semantic_similarity']:
+    if results.get('semantic_similarity'):
         st.subheader("📊 Semantic Similarity")
         ref_names = list(results['semantic_similarity'].keys())
         bi = [results['semantic_similarity'][r]['bi_encoder_score'] for r in ref_names]
@@ -407,7 +427,7 @@ def create_visualization(results):
         df = pd.DataFrame({'Reference': ref_names, 'Bi-Encoder': bi, 'Cross-Encoder': cross, 'Combined': combined})
         st.dataframe(df, use_container_width=True)
     
-    if results['fingerprint_matching']:
+    if results.get('fingerprint_matching'):
         st.subheader("🔍 Fingerprint Matching")
         fp_data = pd.DataFrame({
             'Reference': list(results['fingerprint_matching'].keys()),
@@ -415,7 +435,7 @@ def create_visualization(results):
         })
         st.bar_chart(fp_data.set_index('Reference'))
     
-    if results['novelty_detection']:
+    if results.get('novelty_detection'):
         st.subheader("✨ Novelty Detection")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -450,7 +470,7 @@ def main():
     
     with tab1:
         st.header("Single Document Originality Check")
-        st.info("📌 Upload PDF, DOCX, or **images (handwritten/printed)** - Text auto-loads after extraction!")
+        st.info("📌 Upload PDF, DOCX, or **images (handwritten/printed)** - Text auto-loads!")
         
         col1, col2 = st.columns([2, 1])
         
@@ -463,7 +483,6 @@ def main():
                 key="f1"
             )
             
-            # Store extracted text in a container variable
             extracted_text1 = ""
             
             if file1 is not None:
@@ -480,7 +499,6 @@ def main():
                     st.warning("⚠️ No text extracted")
                     extracted_text1 = ""
             
-            # Text area - use extracted_text1 directly as default value
             text1 = st.text_area(
                 "Text automatically loaded (you can edit)", 
                 value=extracted_text1,
@@ -490,7 +508,7 @@ def main():
         
         with col2:
             st.subheader("Optional: Previous Work")
-            st.caption("For style comparison & self-plagiarism detection")
+            st.caption("For style comparison")
             
             file2 = st.file_uploader(
                 "Upload Previous Assignment", 
@@ -513,7 +531,7 @@ def main():
                 "Text automatically loaded", 
                 value=extracted_text2, 
                 height=200, 
-                placeholder="Upload previous work or paste here..."
+                placeholder="Upload previous work..."
             )
             
             st.divider()
@@ -530,84 +548,89 @@ def main():
             submission_text = text1.strip()
             
             if not submission_text or len(submission_text) < 10:
-                st.error("Please provide the assignment text by uploading a file or pasting text.")
+                st.error("Please provide the assignment text.")
             else:
                 with st.spinner("🔄 Analyzing originality..."):
-                    paras = [p.strip() for p in submission_text.split('\n\n') if len(p.strip()) > 100]
+                    try:
+                        paras = [p.strip() for p in submission_text.split('\n\n') if len(p.strip()) > 100]
+                        
+                        if len(paras) < 2:
+                            sents = sent_tokenize(submission_text)
+                            mid = len(sents) // 2
+                            refs = [
+                                ' '.join(sents[:mid]) if mid > 0 else submission_text[:len(submission_text)//2],
+                                ' '.join(sents[mid:]) if mid > 0 else submission_text[len(submission_text)//2:]
+                            ]
+                        else:
+                            refs = paras[:2]
+                        
+                        results = system.analyze_plagiarism(
+                            submission_text, 
+                            refs, 
+                            text2.strip() if text2 and text2.strip() else None
+                        )
+                        
+                        orig = 100.0
+                        
+                        if 'intrinsic_detection' in results and results.get('intrinsic_detection'):
+                            cons = results['intrinsic_detection']['avg_style_consistency']
+                            if cons < 0.6:
+                                orig -= 30
+                            elif cons < 0.7:
+                                orig -= 15
+                        
+                        nov = results['novelty_detection']['novelty_ratio']
+                        orig = orig * nov
+                        
+                        if text2 and text2.strip() and 'consistency_with_history' in results.get('stylometric_analysis', {}):
+                            style_cons = results['stylometric_analysis']['consistency_with_history']
+                            if style_cons < 0.5:
+                                orig -= 20
+                            elif style_cons < 0.7:
+                                orig -= 10
+                        
+                        orig = max(0, min(100, orig))
+                        
+                        st.success("✅ Originality Check Complete!")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            color = "🟢" if orig > 75 else "🟡" if orig > 50 else "🔴"
+                            st.metric("Originality Score", f"{color} {orig:.1f}%")
+                        with col2:
+                            st.metric("Similarity Index", f"{100-orig:.1f}%")
+                        with col3:
+                            risk = "Low" if orig > 75 else "Medium" if orig > 50 else "High"
+                            st.metric("Plagiarism Risk", risk)
+                        
+                        st.divider()
+                        st.subheader("📊 Interpretation")
+                        
+                        if orig > 90:
+                            st.success("✅ **Excellent Originality**")
+                        elif orig > 75:
+                            st.info("ℹ️ **Good Originality**")
+                        elif orig > 50:
+                            st.warning("⚠️ **Moderate Concern**")
+                        else:
+                            st.error("🚨 **High Risk**")
+                        
+                        st.divider()
+                        create_visualization(results)
+                        
+                        with st.expander("📥 Export Report"):
+                            export = results.copy()
+                            export['originality_score'] = orig
+                            export['similarity_index'] = 100 - orig
+                            st.json(export)
                     
-                    if len(paras) < 2:
-                        sents = sent_tokenize(submission_text)
-                        mid = len(sents) // 2
-                        refs = [
-                            ' '.join(sents[:mid]) if mid > 0 else submission_text[:len(submission_text)//2],
-                            ' '.join(sents[mid:]) if mid > 0 else submission_text[len(submission_text)//2:]
-                        ]
-                    else:
-                        refs = paras[:2]
-                    
-                    results = system.analyze_plagiarism(
-                        submission_text, 
-                        refs, 
-                        text2.strip() if text2 and text2.strip() else None
-                    )
-                    
-                    orig = 100.0
-                    
-                    if 'intrinsic_detection' in results and results['intrinsic_detection']:
-                        cons = results['intrinsic_detection']['avg_style_consistency']
-                        if cons < 0.6:
-                            orig -= 30
-                        elif cons < 0.7:
-                            orig -= 15
-                    
-                    nov = results['novelty_detection']['novelty_ratio']
-                    orig = orig * nov
-                    
-                    if text2 and text2.strip() and 'consistency_with_history' in results['stylometric_analysis']:
-                        style_cons = results['stylometric_analysis']['consistency_with_history']
-                        if style_cons < 0.5:
-                            orig -= 20
-                        elif style_cons < 0.7:
-                            orig -= 10
-                    
-                    orig = max(0, min(100, orig))
-                    
-                    st.success("✅ Originality Check Complete!")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        color = "🟢" if orig > 75 else "🟡" if orig > 50 else "🔴"
-                        st.metric("Originality Score", f"{color} {orig:.1f}%")
-                    with col2:
-                        st.metric("Similarity Index", f"{100-orig:.1f}%")
-                    with col3:
-                        risk = "Low" if orig > 75 else "Medium" if orig > 50 else "High"
-                        st.metric("Plagiarism Risk", risk)
-                    
-                    st.divider()
-                    st.subheader("📊 Interpretation")
-                    
-                    if orig > 90:
-                        st.success("✅ **Excellent Originality** - Highly original work")
-                    elif orig > 75:
-                        st.info("ℹ️ **Good Originality** - Good original content")
-                    elif orig > 50:
-                        st.warning("⚠️ **Moderate Concern** - Review needed")
-                    else:
-                        st.error("🚨 **High Risk** - Detailed review required")
-                    
-                    st.divider()
-                    create_visualization(results)
-                    
-                    with st.expander("📥 Export Report"):
-                        export = results.copy()
-                        export['originality_score'] = orig
-                        export['similarity_index'] = 100 - orig
-                        st.json(export)
+                    except Exception as e:
+                        st.error(f"Analysis error: {str(e)}")
+                        st.info("Please try again or upload a different file.")
     
     with tab2:
         st.header("Compare Multiple Assignments")
-        st.info("📌 Upload assignments - text auto-loads after extraction!")
+        st.info("📌 Upload assignments - text auto-loads!")
         
         n = st.number_input("Number of assignments", 2, 20, 3)
         
@@ -623,15 +646,11 @@ def main():
                 extracted = ""
                 
                 if file is not None:
-                    with st.spinner(f"Extracting {name}'s text..."):
+                    with st.spinner(f"Extracting..."):
                         extracted = system.extract_text_from_file(file)
                     
                     if extracted:
                         st.success(f"✅ {len(extracted)} chars")
-                        
-                        if file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                            with st.expander("View"):
-                                st.image(file, use_column_width=True)
                 
                 text = st.text_area(
                     "Text auto-loaded", 
@@ -679,25 +698,17 @@ def main():
         st.header("About")
         st.markdown("""
         ### 🎯 Features
-        - **80+ Languages** supported
-        - **OCR** for handwritten/printed text
-        - **PDF, DOCX, Images** supported
-        - **Auto-loading** text after extraction
-        - **No references needed** for originality
-        
-        ### 🔬 Detection Methods
-        1. Semantic similarity
-        2. Document fingerprinting
-        3. Stylometric analysis
-        4. Novelty detection
-        5. Intrinsic detection
+        - **80+ Languages** 
+        - **OCR** for handwritten text
+        - **Auto-loading** text
+        - **5 Detection methods**
         
         ### 📖 How to Use
-        1. Upload file (PDF/DOCX/Image)
-        2. Text automatically loads in editor
+        1. Upload file
+        2. Text auto-loads
         3. Click "Check Originality"
         
-        **That's it!** No extra buttons needed.
+        **That's it!**
         """)
 
 if __name__ == "__main__":
