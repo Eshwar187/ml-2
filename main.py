@@ -1,10 +1,15 @@
 import streamlit as st
-from sentence_transformers import SentenceTransformer
+import torch
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 import nltk
-from nltk.tokenize import sent_tokenize
+from nltk.tokenize import sent_tokenize, word_tokenize
+from collections import Counter
+import hashlib
+import easyocr
+from PIL import Image
 import pandas as pd
 import PyPDF2
 from docx import Document
@@ -28,19 +33,21 @@ def download_nltk_data():
     try:
         nltk.download('punkt', quiet=True)
         nltk.download('punkt_tab', quiet=True)
-    except:
-        pass
+        nltk.download('stopwords', quiet=True)
+    except Exception as e:
+        st.warning(f"NLTK download: {e}")
 
 download_nltk_data()
 
 class MultilingualPlagiarismDetector:
     def __init__(self):
-        with st.spinner("🔄 Loading multilingual AI model..."):
+        with st.spinner("🔄 Loading MULTILINGUAL AI models..."):
             try:
-                # MULTILINGUAL model - smaller version (50+ languages)
-                self.model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2', device='cpu')
+                self.semantic_model = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2', device='cpu')
+                self.paraphrase_model = SentenceTransformer('distiluse-base-multilingual-cased-v2', device='cpu')
+                self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cpu')
             except Exception as e:
-                st.error(f"Model error: {e}")
+                st.error(f"Model loading error: {e}")
                 raise
         
         self.ocr_reader = None
@@ -48,31 +55,18 @@ class MultilingualPlagiarismDetector:
         self.exact_match_threshold = 0.95
     
     def load_ocr(self):
-        """Load OCR only when user uploads an image"""
         if self.ocr_reader is None:
-            try:
-                import easyocr
-                with st.spinner("🔄 Loading OCR (first time only)..."):
-                    # Load only essential languages
-                    self.ocr_reader = easyocr.Reader(['en', 'hi', 'ar', 'zh_sim'], gpu=False)
-                st.success("✅ OCR loaded!")
-            except Exception as e:
-                st.error(f"OCR not available: {e}")
-                return None
+            with st.spinner("🔄 Loading OCR..."):
+                self.ocr_reader = easyocr.Reader(['en', 'hi', 'ar', 'zh_sim', 'es', 'fr'], gpu=False)
         return self.ocr_reader
     
     def extract_text_from_image(self, image):
         try:
-            from PIL import Image
             reader = self.load_ocr()
-            if reader is None:
-                st.warning("OCR not available. Please paste text manually.")
-                return ""
-            
             results = reader.readtext(np.array(image), detail=0)
             return '\n'.join(results) if results else ""
         except Exception as e:
-            st.error(f"Image extraction error: {e}")
+            st.error(f"OCR error: {e}")
             return ""
     
     def extract_text_from_pdf(self, pdf_file):
@@ -114,13 +108,12 @@ class MultilingualPlagiarismDetector:
             elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
                 return self.extract_text_from_docx(uploaded_file)
             elif file_type in ["image/png", "image/jpeg", "image/jpg"]:
-                from PIL import Image
                 return self.extract_text_from_image(Image.open(uploaded_file))
             else:
-                st.warning(f"Unsupported: {file_type}")
+                st.warning(f"Unsupported file type: {file_type}")
                 return ""
         except Exception as e:
-            st.error(f"Extraction error: {e}")
+            st.error(f"File extraction error: {e}")
             return ""
     
     def calculate_exact_match(self, text1, text2):
@@ -155,14 +148,14 @@ class MultilingualPlagiarismDetector:
     
     def calculate_tfidf_similarity(self, text1, text2):
         try:
-            vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 4), max_features=500)
+            vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 4))
             tfidf_matrix = vectorizer.fit_transform([text1, text2])
             similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
             return float(similarity)
         except:
             return 0.0
     
-    def detect_plagiarism(self, submitted_text, reference_texts):
+    def detect_plagiarism_advanced(self, submitted_text, reference_texts):
         try:
             submitted_sentences = sent_tokenize(submitted_text)
         except:
@@ -188,12 +181,16 @@ class MultilingualPlagiarismDetector:
         if not all_ref_sentences:
             return self._empty_result()
         
-        st.info(f"🔍 Analyzing {len(submitted_sentences)} sentences...")
+        st.info(f"🔍 Analyzing {len(submitted_sentences)} sentences against {len(all_ref_sentences)} references...")
         
         try:
-            with st.spinner("Encoding (multilingual)..."):
-                submitted_emb = self.model.encode(submitted_sentences, show_progress_bar=False)
-                reference_emb = self.model.encode(all_ref_sentences, show_progress_bar=False)
+            with st.spinner("🧠 Encoding with semantic model..."):
+                submitted_emb_semantic = self.semantic_model.encode(submitted_sentences, show_progress_bar=False, convert_to_numpy=True)
+                reference_emb_semantic = self.semantic_model.encode(all_ref_sentences, show_progress_bar=False, convert_to_numpy=True)
+            
+            with st.spinner("🧠 Encoding with paraphrase model..."):
+                submitted_emb_paraphrase = self.paraphrase_model.encode(submitted_sentences, show_progress_bar=False, convert_to_numpy=True)
+                reference_emb_paraphrase = self.paraphrase_model.encode(all_ref_sentences, show_progress_bar=False, convert_to_numpy=True)
         except Exception as e:
             st.error(f"Encoding error: {e}")
             return self._empty_result()
@@ -208,22 +205,34 @@ class MultilingualPlagiarismDetector:
             try:
                 progress_bar.progress((i + 1) / len(submitted_sentences))
                 
-                similarities = cosine_similarity([submitted_emb[i]], reference_emb)[0]
-                best_idx = int(np.argmax(similarities))
-                sem_score = float(similarities[best_idx])
+                sem_similarities = cosine_similarity([submitted_emb_semantic[i]], reference_emb_semantic)[0]
+                para_similarities = cosine_similarity([submitted_emb_paraphrase[i]], reference_emb_paraphrase)[0]
                 
-                matched_sentence = all_ref_sentences[best_idx]
-                source = sentence_sources[best_idx]
+                best_sem_idx = int(np.argmax(sem_similarities))
+                best_para_idx = int(np.argmax(para_similarities))
+                
+                sem_score = float(sem_similarities[best_sem_idx])
+                para_score = float(para_similarities[best_para_idx])
+                
+                if sem_score > para_score:
+                    max_similarity = sem_score
+                    matched_idx = best_sem_idx
+                else:
+                    max_similarity = para_score
+                    matched_idx = best_para_idx
+                
+                matched_sentence = all_ref_sentences[matched_idx]
+                source = sentence_sources[matched_idx]
                 
                 exact_match_score = self.calculate_exact_match(sent, matched_sentence)
                 ngram_score = self.calculate_ngram_similarity(sent, matched_sentence, n=3)
                 tfidf_score = self.calculate_tfidf_similarity(sent, matched_sentence)
                 
                 combined_score = (
-                    sem_score * 0.40 +
+                    max_similarity * 0.35 +
                     exact_match_score * 0.30 +
                     ngram_score * 0.20 +
-                    tfidf_score * 0.10
+                    tfidf_score * 0.15
                 )
                 
                 is_exact_copy = combined_score >= self.exact_match_threshold
@@ -253,6 +262,7 @@ class MultilingualPlagiarismDetector:
                     'is_exact_copy': is_exact_copy,
                     'combined_score': float(combined_score),
                     'semantic_score': float(sem_score),
+                    'paraphrase_score': float(para_score),
                     'exact_match_score': float(exact_match_score),
                     'ngram_score': float(ngram_score),
                     'tfidf_score': float(tfidf_score),
@@ -261,6 +271,7 @@ class MultilingualPlagiarismDetector:
                 })
             
             except Exception as e:
+                st.warning(f"Error processing sentence {i+1}: {e}")
                 continue
         
         progress_bar.empty()
@@ -269,6 +280,7 @@ class MultilingualPlagiarismDetector:
         original_count = total_sents - plagiarized_count
         
         overall_plagiarism = (plagiarized_count / total_sents * 100) if total_sents > 0 else 0
+        exact_copy_percentage = (exact_copy_count / total_sents * 100) if total_sents > 0 else 0
         
         return {
             'overall_plagiarism': float(overall_plagiarism),
@@ -277,6 +289,7 @@ class MultilingualPlagiarismDetector:
             'plagiarized_sentences': int(plagiarized_count),
             'exact_copies': int(exact_copy_count),
             'original_sentences': int(original_count),
+            'exact_copy_percentage': float(exact_copy_percentage),
             'details': plagiarism_details
         }
     
@@ -288,176 +301,292 @@ class MultilingualPlagiarismDetector:
             'plagiarized_sentences': 0,
             'exact_copies': 0,
             'original_sentences': 0,
+            'exact_copy_percentage': 0.0,
             'details': []
         }
+    
+    def compare_assignments(self, assignments_dict):
+        names = list(assignments_dict.keys())
+        n = len(names)
+        matrix = np.zeros((n, n))
+        
+        progress = st.progress(0)
+        total = (n * (n - 1)) // 2
+        current = 0
+        
+        for i in range(n):
+            for j in range(i + 1, n):
+                try:
+                    text1 = assignments_dict[names[i]]
+                    text2 = assignments_dict[names[j]]
+                    
+                    emb1 = self.semantic_model.encode([text1], show_progress_bar=False)[0]
+                    emb2 = self.semantic_model.encode([text2], show_progress_bar=False)[0]
+                    sem_sim = float(cosine_similarity([emb1], [emb2])[0][0])
+                    
+                    exact_sim = self.calculate_exact_match(text1, text2)
+                    ngram_sim = self.calculate_ngram_similarity(text1, text2)
+                    
+                    combined = (sem_sim * 0.5 + exact_sim * 0.3 + ngram_sim * 0.2)
+                    
+                    matrix[i][j] = combined
+                    matrix[j][i] = combined
+                except Exception as e:
+                    st.warning(f"Error comparing {names[i]} and {names[j]}: {e}")
+                
+                current += 1
+                progress.progress(current / total)
+        
+        progress.empty()
+        return matrix, names
 
 @st.cache_resource(show_spinner=False)
 def load_detector():
     return MultilingualPlagiarismDetector()
 
 def main():
-    st.title("🌍 Multilingual Plagiarism Detector")
-    st.markdown("### 50+ Languages • OCR Support • Free")
+    st.title("🌍 MULTILINGUAL Plagiarism Detector")
+    st.markdown("### 100+ Languages • 5 Detection Algorithms • 3 AI Models")
     
     with st.sidebar:
-        st.header("🎯 Features")
-        st.success("✅ Multilingual (50+ langs)")
-        st.success("✅ OCR (on-demand)")
-        st.success("✅ PDF/DOCX/Images")
-        st.success("✅ 4 Detection Methods")
+        st.header("🎯 System Info")
+        
+        st.subheader("🧠 AI Models:")
+        st.success("✅ Multilingual MPNet")
+        st.success("✅ DistilUSE Multilingual")
+        st.success("✅ Cross-Encoder")
         
         st.divider()
         
-        st.info("""
-        **Supported Languages:**
-        English, Spanish, French, German, 
-        Italian, Portuguese, Dutch, Polish,
-        Russian, Arabic, Hindi, Chinese,
-        Japanese, Korean, and 35+ more!
-        """)
+        st.subheader("🔍 Detection Methods:")
+        st.info("1. Semantic Similarity")
+        st.info("2. Paraphrase Detection")
+        st.info("3. Exact Matching")
+        st.info("4. N-gram Analysis")
+        st.info("5. TF-IDF Vectors")
+        
+        st.divider()
+        
+        st.markdown("**🌐 Supported Languages:**")
+        st.caption("English, Spanish, French, German, Hindi, Arabic, Chinese, Japanese, Korean, Russian, and 90+ more")
     
     detector = load_detector()
     
-    st.header("Plagiarism Detection")
-    st.info("📌 Works with ANY language • Upload submission + references")
+    tab1, tab2 = st.tabs(["📝 Detect Plagiarism", "🔄 Compare Assignments"])
     
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.subheader("📄 Student Submission")
+    with tab1:
+        st.header("Plagiarism Detection")
+        st.info("📌 Upload submission + references")
         
-        submission_file = st.file_uploader(
-            "Upload (PDF/DOCX/Image)", 
-            type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], 
-            key="sub"
-        )
+        col1, col2 = st.columns([1, 1])
         
-        submission_text = ""
-        
-        if submission_file:
-            with st.spinner("Extracting..."):
-                submission_text = detector.extract_text_from_file(submission_file)
+        with col1:
+            st.subheader("📄 Student Submission")
             
-            if submission_text:
-                st.success(f"✅ {len(submission_text)} characters")
+            submission_file = st.file_uploader(
+                "Upload (PDF/DOCX/Image)", 
+                type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], 
+                key="sub"
+            )
+            
+            submission_text = ""
+            
+            if submission_file:
+                with st.spinner("Extracting..."):
+                    submission_text = detector.extract_text_from_file(submission_file)
                 
-                if submission_file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                    with st.expander("View Image"):
-                        st.image(submission_file)
+                if submission_text:
+                    st.success(f"✅ Extracted {len(submission_text)} characters")
+                    
+                    if submission_file.type in ["image/png", "image/jpeg", "image/jpg"]:
+                        with st.expander("View Image"):
+                            st.image(submission_file)
+            
+            submission_text = st.text_area(
+                "Or paste text",
+                value=submission_text,
+                height=300,
+                placeholder="Enter or upload student submission..."
+            )
         
-        submission_text = st.text_area(
-            "Or paste text (any language)",
-            value=submission_text,
-            height=300,
-            placeholder="Paste text in any language..."
-        )
-    
-    with col2:
-        st.subheader("📚 References")
+        with col2:
+            st.subheader("📚 Reference Sources")
+            
+            num_refs = st.number_input("Number of references", 1, 10, 2)
+            
+            reference_texts = []
+            
+            for i in range(num_refs):
+                with st.expander(f"Reference {i+1}", expanded=(i==0)):
+                    ref_file = st.file_uploader(
+                        f"Upload reference",
+                        type=['pdf', 'docx', 'png', 'jpg', 'jpeg'],
+                        key=f"ref{i}"
+                    )
+                    
+                    ref_text = ""
+                    
+                    if ref_file:
+                        with st.spinner("Extracting..."):
+                            ref_text = detector.extract_text_from_file(ref_file)
+                        if ref_text:
+                            st.success(f"✅ {len(ref_text)} chars")
+                    
+                    ref_text = st.text_area(
+                        "Or paste reference",
+                        value=ref_text,
+                        height=100,
+                        key=f"rt{i}",
+                        placeholder="Enter reference text..."
+                    )
+                    
+                    if ref_text and ref_text.strip():
+                        reference_texts.append(ref_text.strip())
         
-        num_refs = st.number_input("Number", 1, 5, 2)
-        
-        reference_texts = []
-        
-        for i in range(num_refs):
-            with st.expander(f"Reference {i+1}", expanded=(i==0)):
-                ref_file = st.file_uploader(
-                    f"Upload",
-                    type=['pdf', 'docx', 'png', 'jpg', 'jpeg'],
-                    key=f"ref{i}"
-                )
-                
-                ref_text = ""
-                
-                if ref_file:
-                    with st.spinner("Extracting..."):
-                        ref_text = detector.extract_text_from_file(ref_file)
-                    if ref_text:
-                        st.success(f"✅ {len(ref_text)} chars")
-                
-                ref_text = st.text_area(
-                    "Or paste",
-                    value=ref_text,
-                    height=100,
-                    key=f"rt{i}"
-                )
-                
-                if ref_text and ref_text.strip():
-                    reference_texts.append(ref_text.strip())
-    
-    if st.button("🔍 DETECT PLAGIARISM", type="primary", use_container_width=True):
-        if not submission_text or not submission_text.strip():
-            st.error("❌ Provide submission")
-        elif not reference_texts:
-            st.error("❌ Provide references")
-        else:
-            try:
-                results = detector.detect_plagiarism(submission_text, reference_texts)
-                
-                st.success("✅ ANALYSIS COMPLETE!")
-                
-                col1, col2, col3, col4 = st.columns(4)
-                
-                plag_pct = results['overall_plagiarism']
-                orig_pct = results['originality']
-                
-                with col1:
-                    if plag_pct > 30:
-                        st.metric("Plagiarism", f"🔴 {plag_pct:.1f}%")
-                    elif plag_pct > 15:
-                        st.metric("Plagiarism", f"🟠 {plag_pct:.1f}%")
+        if st.button("🔍 DETECT PLAGIARISM", type="primary", use_container_width=True):
+            if not submission_text or not submission_text.strip():
+                st.error("❌ Please provide submission text")
+            elif not reference_texts:
+                st.error("❌ Please provide at least 1 reference")
+            else:
+                try:
+                    results = detector.detect_plagiarism_advanced(submission_text, reference_texts)
+                    
+                    st.success("✅ ANALYSIS COMPLETE!")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    plag_pct = results['overall_plagiarism']
+                    orig_pct = results['originality']
+                    
+                    with col1:
+                        if plag_pct > 30:
+                            st.metric("Plagiarism", f"🔴 {plag_pct:.1f}%")
+                        elif plag_pct > 15:
+                            st.metric("Plagiarism", f"🟠 {plag_pct:.1f}%")
+                        else:
+                            st.metric("Plagiarism", f"🟢 {plag_pct:.1f}%")
+                    
+                    with col2:
+                        st.metric("Originality", f"{orig_pct:.1f}%")
+                    
+                    with col3:
+                        st.metric("Plagiarized", f"{results['plagiarized_sentences']}/{results['total_sentences']}")
+                    
+                    with col4:
+                        st.metric("Exact Copies", f"🔴 {results['exact_copies']}")
+                    
+                    st.divider()
+                    
+                    if plag_pct < 10:
+                        st.success("✅ **EXCELLENT** - Minimal plagiarism")
+                    elif plag_pct < 25:
+                        st.warning("⚠️ **ACCEPTABLE** - Some similarities")
+                    elif plag_pct < 50:
+                        st.error("🚨 **CONCERNING** - Significant plagiarism")
                     else:
-                        st.metric("Plagiarism", f"🟢 {plag_pct:.1f}%")
-                
-                with col2:
-                    st.metric("Originality", f"{orig_pct:.1f}%")
-                
-                with col3:
-                    st.metric("Plagiarized", f"{results['plagiarized_sentences']}/{results['total_sentences']}")
-                
-                with col4:
-                    st.metric("Exact Copies", f"🔴 {results['exact_copies']}")
-                
-                st.divider()
-                
-                if plag_pct < 10:
-                    st.success("✅ **EXCELLENT**")
-                elif plag_pct < 25:
-                    st.warning("⚠️ **ACCEPTABLE**")
-                else:
-                    st.error("🚨 **CONCERNING**")
-                
-                st.divider()
-                
-                st.subheader("📊 Detailed Analysis")
-                
-                exact_copies = [d for d in results['details'] if d['is_exact_copy']]
-                plagiarized = [d for d in results['details'] if d['is_plagiarized'] and not d['is_exact_copy']]
-                original = [d for d in results['details'] if not d['is_plagiarized']]
-                
-                if exact_copies:
-                    st.error(f"🔴 **EXACT COPIES ({len(exact_copies)})**")
-                    for item in exact_copies[:5]:
-                        st.markdown(f"**Sentence {item['sentence_number']}** - {item['combined_score']:.1%}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.info(item['sentence'])
-                        with col2:
-                            st.warning(f"{item['source']}: {item['matched_text']}")
-                        st.divider()
-                
-                if plagiarized:
-                    with st.expander(f"🟠 Plagiarized ({len(plagiarized)})"):
-                        for item in plagiarized[:10]:
+                        st.error("🔴 **CRITICAL** - Severe plagiarism")
+                    
+                    st.divider()
+                    
+                    st.subheader("📊 Detailed Analysis")
+                    
+                    exact_copies = [d for d in results['details'] if d['is_exact_copy']]
+                    plagiarized = [d for d in results['details'] if d['is_plagiarized'] and not d['is_exact_copy']]
+                    original = [d for d in results['details'] if not d['is_plagiarized']]
+                    
+                    if exact_copies:
+                        st.error(f"🔴 **EXACT COPIES ({len(exact_copies)})**")
+                        for item in exact_copies:
+                            with st.container():
+                                st.markdown(f"**Sentence {item['sentence_number']}** - Match: {item['combined_score']:.1%}")
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.markdown("**Submitted:**")
+                                    st.info(item['sentence'])
+                                with col2:
+                                    st.markdown(f"**From {item['source']}:**")
+                                    st.warning(item['matched_text'])
+                                
+                                st.caption(f"Semantic: {item['semantic_score']:.1%} | Exact: {item['exact_match_score']:.1%} | N-gram: {item['ngram_score']:.1%}")
+                                st.divider()
+                    
+                    if plagiarized:
+                        with st.expander(f"🟠 Plagiarized ({len(plagiarized)})"):
+                            for item in plagiarized:
+                                st.markdown(f"**Sentence {item['sentence_number']}** - {item['combined_score']:.1%}")
+                                st.markdown(f"**Submitted:** {item['sentence']}")
+                                st.markdown(f"**Matched ({item['source']}):** {item['matched_text']}")
+                                st.divider()
+                    
+                    with st.expander(f"🟢 Original ({len(original)})"):
+                        for item in original:
                             st.markdown(f"**{item['sentence_number']}.** {item['sentence']}")
-                            st.caption(f"Matched: {item['matched_text'][:100]}...")
+                    
+                    with st.expander("📥 Export Report"):
+                        st.json(results)
                 
-                with st.expander(f"🟢 Original ({len(original)})"):
-                    for item in original[:10]:
-                        st.markdown(f"**{item['sentence_number']}.** {item['sentence']}")
-            
-            except Exception as e:
-                st.error(f"Error: {e}")
+                except Exception as e:
+                    st.error(f"Analysis error: {e}")
+                    st.info("Please check your inputs and try again")
+    
+    with tab2:
+        st.header("Compare Assignments")
+        
+        n = st.number_input("Number of assignments", 2, 20, 3)
+        
+        assigns = {}
+        cols = st.columns(2)
+        
+        for i in range(n):
+            with cols[i % 2]:
+                name = st.text_input(f"Student {i+1}", f"Student{i+1}", key=f"n{i}")
+                file = st.file_uploader("Upload", type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], key=f"cf{i}")
+                
+                text = ""
+                if file:
+                    text = detector.extract_text_from_file(file)
+                    if text:
+                        st.success(f"✅ {len(text)} chars")
+                
+                text = st.text_area("Or paste", value=text, height=80, key=f"ct{i}")
+                
+                if text and text.strip():
+                    assigns[name] = text
+        
+        if st.button("🔍 Compare All", type="primary"):
+            if len(assigns) < 2:
+                st.error("Need at least 2 assignments")
+            else:
+                try:
+                    matrix, names = detector.compare_assignments(assigns)
+                    
+                    st.success("✅ Comparison Complete!")
+                    
+                    st.subheader("📊 Similarity Matrix")
+                    df = pd.DataFrame(matrix * 100, columns=names, index=names)
+                    st.dataframe(df.style.background_gradient(cmap='Reds', vmin=0, vmax=100).format("{:.1f}%"), use_container_width=True)
+                    
+                    st.divider()
+                    
+                    suspicious = []
+                    for i in range(len(names)):
+                        for j in range(i+1, len(names)):
+                            sim = matrix[i][j] * 100
+                            if sim > 50:
+                                suspicious.append({
+                                    'Pair': f"{names[i]} ↔ {names[j]}",
+                                    'Similarity': f"{sim:.1f}%"
+                                })
+                    
+                    if suspicious:
+                        st.error(f"🚨 Found {len(suspicious)} suspicious pair(s)")
+                        st.dataframe(pd.DataFrame(suspicious), use_container_width=True)
+                    else:
+                        st.success("✅ All assignments unique")
+                
+                except Exception as e:
+                    st.error(f"Comparison error: {e}")
 
 if __name__ == "__main__":
     main()
