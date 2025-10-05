@@ -47,12 +47,13 @@ class MultilingualPlagiarismDetector:
     def load_ocr(self):
         if self.ocr_reader is None:
             with st.spinner("🔄 Loading OCR..."):
-                self.ocr_reader = easyocr.Reader(['en', 'hi', 'ar', 'zh_sim', 'es', 'fr'], gpu=False)
+                self.ocr_reader = easyocr.Reader(['en', 'hi', 'ar', 'zh_sim'], gpu=False)
         return self.ocr_reader
     
-    def extract_text_from_pdf(self, pdf_file):
+    def extract_text_from_pdf(self, pdf_bytes):
         try:
-            reader = PyPDF2.PdfReader(pdf_file)
+            import io
+            reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
             text = ""
             for page in reader.pages:
                 extracted = page.extract_text()
@@ -60,46 +61,64 @@ class MultilingualPlagiarismDetector:
                     text += extracted + "\n"
             return text.strip()
         except Exception as e:
-            st.error(f"PDF error: {e}")
+            st.error(f"PDF error: {str(e)}")
             return ""
     
-    def extract_text_from_docx(self, docx_file):
+    def extract_text_from_docx(self, docx_bytes):
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp:
-                tmp.write(docx_file.getvalue())
+                tmp.write(docx_bytes)
+                tmp.flush()
                 tmp_path = tmp.name
+            
             doc = Document(tmp_path)
             text = '\n'.join([p.text for p in doc.paragraphs if p.text])
-            os.unlink(tmp_path)
+            
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+            
             return text.strip()
         except Exception as e:
-            st.error(f"DOCX error: {e}")
+            st.error(f"DOCX error: {str(e)}")
             return ""
     
-    def extract_text_from_image(self, image):
+    def extract_text_from_image(self, image_bytes):
         try:
+            import io
             reader = self.load_ocr()
+            image = Image.open(io.BytesIO(image_bytes))
             results = reader.readtext(np.array(image), detail=0)
             return '\n'.join(results) if results else ""
         except Exception as e:
-            st.error(f"OCR error: {e}")
+            st.error(f"OCR error: {str(e)}")
             return ""
     
-    def extract_text(self, file):
-        if not file:
+    def extract_text(self, uploaded_file):
+        """Extract text from uploaded file"""
+        if not uploaded_file:
             return ""
         
         try:
-            file_type = file.type
+            # Read file bytes once
+            file_bytes = uploaded_file.read()
+            file_type = uploaded_file.type
+            
+            # Reset file pointer
+            uploaded_file.seek(0)
+            
             if file_type == "application/pdf":
-                return self.extract_text_from_pdf(file)
+                return self.extract_text_from_pdf(file_bytes)
             elif "wordprocessing" in file_type:
-                return self.extract_text_from_docx(file)
+                return self.extract_text_from_docx(file_bytes)
             elif file_type in ["image/png", "image/jpeg", "image/jpg"]:
-                return self.extract_text_from_image(Image.open(file))
-            return ""
+                return self.extract_text_from_image(file_bytes)
+            else:
+                st.warning(f"Unsupported type: {file_type}")
+                return ""
         except Exception as e:
-            st.error(f"Extraction error: {e}")
+            st.error(f"Extraction failed: {str(e)}")
             return ""
     
     def calculate_exact_match(self, text1, text2):
@@ -129,7 +148,7 @@ class MultilingualPlagiarismDetector:
     
     def calculate_tfidf_similarity(self, text1, text2):
         try:
-            vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 4), max_features=1000)
+            vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 4), max_features=500)
             tfidf_matrix = vectorizer.fit_transform([text1, text2])
             similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
             return float(similarity)
@@ -155,18 +174,16 @@ class MultilingualPlagiarismDetector:
             for s in sents:
                 if len(s) > 15:
                     ref_sents.append(s)
-                    sources.append(f"Reference {idx+1}")
+                    sources.append(f"Ref {idx+1}")
         
         if not ref_sents:
             return self._empty_result()
         
         st.info(f"🔍 Analyzing {len(sub_sents)} sentences...")
         
-        with st.spinner("🧠 Semantic encoding..."):
+        with st.spinner("Encoding..."):
             sub_emb_sem = self.semantic_model.encode(sub_sents, show_progress_bar=False)
             ref_emb_sem = self.semantic_model.encode(ref_sents, show_progress_bar=False)
-        
-        with st.spinner("🧠 Paraphrase encoding..."):
             sub_emb_para = self.paraphrase_model.encode(sub_sents, show_progress_bar=False)
             ref_emb_para = self.paraphrase_model.encode(ref_sents, show_progress_bar=False)
         
@@ -179,31 +196,32 @@ class MultilingualPlagiarismDetector:
             progress.progress((i+1)/len(sub_sents))
             
             sem_sims = cosine_similarity([sub_emb_sem[i]], ref_emb_sem)[0]
-            best_sem_idx = int(np.argmax(sem_sims))
-            sem_score = float(sem_sims[best_sem_idx])
-            
             para_sims = cosine_similarity([sub_emb_para[i]], ref_emb_para)[0]
-            best_para_idx = int(np.argmax(para_sims))
-            para_score = float(para_sims[best_para_idx])
+            
+            sem_idx = int(np.argmax(sem_sims))
+            para_idx = int(np.argmax(para_sims))
+            
+            sem_score = float(sem_sims[sem_idx])
+            para_score = float(para_sims[para_idx])
             
             if sem_score > para_score:
-                best_score = sem_score
-                matched_idx = best_sem_idx
+                matched_idx = sem_idx
+                ai_score = sem_score
             else:
-                best_score = para_score
-                matched_idx = best_para_idx
+                matched_idx = para_idx
+                ai_score = para_score
             
             matched_sent = ref_sents[matched_idx]
             source = sources[matched_idx]
             
             exact_score = self.calculate_exact_match(sent, matched_sent)
-            ngram_score = self.calculate_ngram_similarity(sent, matched_sent, n=3)
+            ngram_score = self.calculate_ngram_similarity(sent, matched_sent)
             tfidf_score = self.calculate_tfidf_similarity(sent, matched_sent)
             
-            combined = (best_score * 0.35 + exact_score * 0.30 + ngram_score * 0.20 + tfidf_score * 0.15)
+            combined = (ai_score * 0.35 + exact_score * 0.30 + ngram_score * 0.20 + tfidf_score * 0.15)
             
-            is_exact = combined >= self.exact_match_threshold
-            is_plag = combined >= self.plagiarism_threshold
+            is_exact = combined >= 0.95
+            is_plag = combined >= 0.70
             
             if is_plag:
                 plag_count += 1
@@ -216,16 +234,12 @@ class MultilingualPlagiarismDetector:
                 'is_plagiarized': is_plag,
                 'is_exact_copy': is_exact,
                 'combined_score': float(combined),
-                'semantic_score': float(sem_score),
-                'paraphrase_score': float(para_score),
-                'exact_match_score': float(exact_score),
-                'ngram_score': float(ngram_score),
-                'tfidf_score': float(tfidf_score),
                 'matched_text': matched_sent,
                 'source': source
             })
         
         progress.empty()
+        
         total = len(sub_sents)
         plag_pct = (plag_count / total * 100) if total > 0 else 0
         
@@ -255,51 +269,26 @@ def load_detector():
     return MultilingualPlagiarismDetector()
 
 def main():
-    st.title("🌍 MULTILINGUAL Plagiarism Detector")
-    st.markdown("### 3 AI Models • 5 Detection Algorithms • OCR • 100+ Languages")
-    
-    with st.sidebar:
-        st.header("🎯 System")
-        st.subheader("🧠 AI Models:")
-        st.success("✅ Multilingual MPNet")
-        st.success("✅ DistilUSE Multilingual")
-        st.success("✅ Cross-Encoder")
-        st.success("✅ EasyOCR (80+ langs)")
-        st.divider()
-        st.subheader("🔍 Detection:")
-        st.info("1. Semantic Similarity")
-        st.info("2. Paraphrase Detection")
-        st.info("3. Exact Matching")
-        st.info("4. N-gram Analysis")
-        st.info("5. TF-IDF Vectors")
+    st.title("🌍 Multilingual Plagiarism Detector")
+    st.markdown("### 3 AI Models • OCR • 100+ Languages")
     
     detector = load_detector()
     
-    st.header("Plagiarism Detection")
-    
     col1, col2 = st.columns(2)
     
-    # SUBMISSION COLUMN
     with col1:
         st.subheader("📄 Submission")
-        sub_file = st.file_uploader("Upload (PDF/DOCX/Image)", type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], key="sub")
+        sub_file = st.file_uploader("Upload", type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], key="sub")
         
-        # Initialize variable
-        if 'sub_text_value' not in st.session_state:
-            st.session_state.sub_text_value = ""
-        
-        # Extract text when file is uploaded
+        sub_text = ""
         if sub_file:
             with st.spinner("Extracting..."):
-                extracted = detector.extract_text(sub_file)
-                if extracted:
-                    st.session_state.sub_text_value = extracted
-                    st.success(f"✅ {len(extracted)} chars")
+                sub_text = detector.extract_text(sub_file)
+            if sub_text:
+                st.success(f"✅ {len(sub_text)} chars")
         
-        # Text area
-        sub_text = st.text_area("Or paste text", value=st.session_state.sub_text_value, height=300, key="sub_text_input")
+        sub_input = st.text_area("Text", value=sub_text, height=300)
     
-    # REFERENCES COLUMN
     with col2:
         st.subheader("📚 References")
         num_refs = st.number_input("Number", 1, 5, 1)
@@ -307,105 +296,53 @@ def main():
         ref_texts = []
         
         for i in range(num_refs):
-            st.markdown(f"**Reference {i+1}**")
-            
-            # Initialize session state for this reference
-            if f'ref_text_value_{i}' not in st.session_state:
-                st.session_state[f'ref_text_value_{i}'] = ""
-            
+            st.markdown(f"**Ref {i+1}**")
             ref_file = st.file_uploader("Upload", type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], key=f"ref{i}")
             
-            # Extract when file uploaded
+            ref_text = ""
             if ref_file:
                 with st.spinner("Extracting..."):
-                    extracted = detector.extract_text(ref_file)
-                    if extracted:
-                        st.session_state[f'ref_text_value_{i}'] = extracted
-                        st.success(f"✅ {len(extracted)} chars")
-                        ref_texts.append(extracted)
+                    ref_text = detector.extract_text(ref_file)
+                if ref_text:
+                    st.success(f"✅ {len(ref_text)} chars")
+                    ref_texts.append(ref_text)
             
-            # Text area
-            ref_text = st.text_area("Or paste", value=st.session_state[f'ref_text_value_{i}'], height=100, key=f"ref_text{i}")
+            ref_input = st.text_area("Text", value=ref_text, height=100, key=f"rt{i}")
             
-            # Add manually entered text
-            if ref_text and ref_text.strip() and not ref_file:
-                if ref_text not in ref_texts:
-                    ref_texts.append(ref_text.strip())
+            if ref_input and ref_input.strip() and not ref_file:
+                ref_texts.append(ref_input.strip())
     
-    # DETECT BUTTON
-    if st.button("🔍 DETECT PLAGIARISM", type="primary", use_container_width=True):
-        if not sub_text or not sub_text.strip():
+    if st.button("🔍 DETECT", type="primary"):
+        if not sub_input or not sub_input.strip():
             st.error("❌ Provide submission")
         elif not ref_texts:
             st.error("❌ Provide references")
         else:
-            try:
-                results = detector.detect_plagiarism_advanced(sub_text, ref_texts)
-                
-                st.success("✅ ANALYSIS COMPLETE!")
-                
-                plag = results['overall_plagiarism']
-                
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    if plag > 30:
-                        st.metric("Plagiarism", f"🔴 {plag:.1f}%")
-                    elif plag > 15:
-                        st.metric("Plagiarism", f"🟠 {plag:.1f}%")
-                    else:
-                        st.metric("Plagiarism", f"🟢 {plag:.1f}%")
-                with col2:
-                    st.metric("Originality", f"{results['originality']:.1f}%")
-                with col3:
-                    st.metric("Plagiarized", f"{results['plagiarized_sentences']}/{results['total_sentences']}")
-                with col4:
-                    st.metric("Exact Copies", f"🔴 {results['exact_copies']}")
-                
-                st.divider()
-                
-                if plag < 10:
-                    st.success("✅ **EXCELLENT**")
-                elif plag < 25:
-                    st.warning("⚠️ **ACCEPTABLE**")
-                else:
-                    st.error("🚨 **CONCERNING**")
-                
-                st.divider()
-                st.subheader("📊 Details")
-                
-                exact = [d for d in results['details'] if d['is_exact_copy']]
-                plag_items = [d for d in results['details'] if d['is_plagiarized'] and not d['is_exact_copy']]
-                original = [d for d in results['details'] if not d['is_plagiarized']]
-                
-                if exact:
-                    st.error(f"🔴 **EXACT COPIES ({len(exact)})**")
-                    for item in exact[:5]:
-                        st.markdown(f"**Sentence {item['sentence_number']}** - {item['combined_score']:.1%}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.info(item['sentence'])
-                        with col2:
-                            st.warning(f"{item['source']}: {item['matched_text'][:100]}...")
-                        st.caption(f"Semantic: {item['semantic_score']:.1%} | Exact: {item['exact_match_score']:.1%} | N-gram: {item['ngram_score']:.1%}")
-                        st.divider()
-                
-                if plag_items:
-                    with st.expander(f"🟠 Plagiarized Sentences ({len(plag_items)})"):
-                        for item in plag_items[:10]:
-                            st.markdown(f"**{item['sentence_number']}.** {item['sentence']}")
-                            st.caption(f"Score: {item['combined_score']:.1%} | {item['source']}")
-                
-                with st.expander(f"🟢 Original Sentences ({len(original)})"):
-                    for item in original[:10]:
-                        st.markdown(f"**{item['sentence_number']}.** {item['sentence']}")
-                
-                with st.expander("📥 Export Report"):
-                    st.json(results)
+            results = detector.detect_plagiarism_advanced(sub_input, ref_texts)
             
-            except Exception as e:
-                st.error(f"Error: {e}")
-                import traceback
-                st.code(traceback.format_exc())
+            st.success("✅ DONE!")
+            
+            plag = results['overall_plagiarism']
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Plagiarism", f"{'🔴' if plag>30 else '🟠' if plag>15 else '🟢'} {plag:.1f}%")
+            with col2:
+                st.metric("Originality", f"{results['originality']:.1f}%")
+            with col3:
+                st.metric("Plagiarized", f"{results['plagiarized_sentences']}/{results['total_sentences']}")
+            with col4:
+                st.metric("Exact", f"{results['exact_copies']}")
+            
+            st.divider()
+            
+            exact = [d for d in results['details'] if d['is_exact_copy']]
+            if exact:
+                st.error(f"🔴 {len(exact)} EXACT COPIES")
+                for item in exact[:3]:
+                    st.markdown(f"**{item['sentence_number']}.** {item['sentence']}")
+                    st.caption(f"From {item['source']}: {item['matched_text'][:100]}...")
+                    st.divider()
 
 if __name__ == "__main__":
     main()
