@@ -148,7 +148,7 @@ class MultilingualPlagiarismDetector:
     
     def calculate_tfidf_similarity(self, text1, text2):
         try:
-            vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 4))
+            vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 4), max_features=1000)
             tfidf_matrix = vectorizer.fit_transform([text1, text2])
             similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
             return float(similarity)
@@ -271,7 +271,6 @@ class MultilingualPlagiarismDetector:
                 })
             
             except Exception as e:
-                st.warning(f"Error processing sentence {i+1}: {e}")
                 continue
         
         progress_bar.empty()
@@ -364,11 +363,6 @@ def main():
         st.info("3. Exact Matching")
         st.info("4. N-gram Analysis")
         st.info("5. TF-IDF Vectors")
-        
-        st.divider()
-        
-        st.markdown("**🌐 Supported Languages:**")
-        st.caption("English, Spanish, French, German, Hindi, Arabic, Chinese, Japanese, Korean, Russian, and 90+ more")
     
     detector = load_detector()
     
@@ -405,41 +399,41 @@ def main():
             submission_text = st.text_area(
                 "Or paste text",
                 value=submission_text,
-                height=300,
-                placeholder="Enter or upload student submission..."
+                height=300
             )
         
         with col2:
-            st.subheader("📚 Reference Sources")
+            st.subheader("📚 References")
             
-            num_refs = st.number_input("Number of references", 1, 10, 2)
+            num_refs = st.number_input("Number", 1, 10, 1)
             
             reference_texts = []
             
             for i in range(num_refs):
-                with st.expander(f"Reference {i+1}", expanded=(i==0)):
+                with st.expander(f"Reference {i+1}", expanded=True):
                     ref_file = st.file_uploader(
                         f"Upload reference",
                         type=['pdf', 'docx', 'png', 'jpg', 'jpeg'],
                         key=f"ref{i}"
                     )
                     
-                    ref_text = ""
+                    ref_text_extracted = ""
                     
                     if ref_file:
                         with st.spinner("Extracting..."):
-                            ref_text = detector.extract_text_from_file(ref_file)
-                        if ref_text:
-                            st.success(f"✅ {len(ref_text)} chars")
+                            ref_text_extracted = detector.extract_text_from_file(ref_file)
+                        if ref_text_extracted:
+                            st.success(f"✅ {len(ref_text_extracted)} chars")
                     
+                    # THIS IS THE FIX - use extracted text as default
                     ref_text = st.text_area(
                         "Or paste reference",
-                        value=ref_text,
+                        value=ref_text_extracted,
                         height=100,
-                        key=f"rt{i}",
-                        placeholder="Enter reference text..."
+                        key=f"rt{i}"
                     )
                     
+                    # Add to list if not empty
                     if ref_text and ref_text.strip():
                         reference_texts.append(ref_text.strip())
         
@@ -479,17 +473,15 @@ def main():
                     st.divider()
                     
                     if plag_pct < 10:
-                        st.success("✅ **EXCELLENT** - Minimal plagiarism")
+                        st.success("✅ **EXCELLENT**")
                     elif plag_pct < 25:
-                        st.warning("⚠️ **ACCEPTABLE** - Some similarities")
-                    elif plag_pct < 50:
-                        st.error("🚨 **CONCERNING** - Significant plagiarism")
+                        st.warning("⚠️ **ACCEPTABLE**")
                     else:
-                        st.error("🔴 **CRITICAL** - Severe plagiarism")
+                        st.error("🚨 **CONCERNING**")
                     
                     st.divider()
                     
-                    st.subheader("📊 Detailed Analysis")
+                    st.subheader("📊 Details")
                     
                     exact_copies = [d for d in results['details'] if d['is_exact_copy']]
                     plagiarized = [d for d in results['details'] if d['is_plagiarized'] and not d['is_exact_copy']]
@@ -497,43 +489,31 @@ def main():
                     
                     if exact_copies:
                         st.error(f"🔴 **EXACT COPIES ({len(exact_copies)})**")
-                        for item in exact_copies:
-                            with st.container():
-                                st.markdown(f"**Sentence {item['sentence_number']}** - Match: {item['combined_score']:.1%}")
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.markdown("**Submitted:**")
-                                    st.info(item['sentence'])
-                                with col2:
-                                    st.markdown(f"**From {item['source']}:**")
-                                    st.warning(item['matched_text'])
-                                
-                                st.caption(f"Semantic: {item['semantic_score']:.1%} | Exact: {item['exact_match_score']:.1%} | N-gram: {item['ngram_score']:.1%}")
-                                st.divider()
+                        for item in exact_copies[:5]:
+                            st.markdown(f"**Sentence {item['sentence_number']}** - {item['combined_score']:.1%}")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.info(item['sentence'])
+                            with col2:
+                                st.warning(f"{item['source']}: {item['matched_text']}")
+                            st.divider()
                     
                     if plagiarized:
                         with st.expander(f"🟠 Plagiarized ({len(plagiarized)})"):
-                            for item in plagiarized:
-                                st.markdown(f"**Sentence {item['sentence_number']}** - {item['combined_score']:.1%}")
-                                st.markdown(f"**Submitted:** {item['sentence']}")
-                                st.markdown(f"**Matched ({item['source']}):** {item['matched_text']}")
-                                st.divider()
+                            for item in plagiarized[:10]:
+                                st.markdown(f"**{item['sentence_number']}.** {item['sentence']}")
                     
                     with st.expander(f"🟢 Original ({len(original)})"):
-                        for item in original:
+                        for item in original[:10]:
                             st.markdown(f"**{item['sentence_number']}.** {item['sentence']}")
-                    
-                    with st.expander("📥 Export Report"):
-                        st.json(results)
                 
                 except Exception as e:
-                    st.error(f"Analysis error: {e}")
-                    st.info("Please check your inputs and try again")
+                    st.error(f"Error: {e}")
     
     with tab2:
         st.header("Compare Assignments")
         
-        n = st.number_input("Number of assignments", 2, 20, 3)
+        n = st.number_input("Assignments", 2, 20, 3)
         
         assigns = {}
         cols = st.columns(2)
@@ -543,50 +523,44 @@ def main():
                 name = st.text_input(f"Student {i+1}", f"Student{i+1}", key=f"n{i}")
                 file = st.file_uploader("Upload", type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], key=f"cf{i}")
                 
-                text = ""
+                text_extracted = ""
                 if file:
-                    text = detector.extract_text_from_file(file)
-                    if text:
-                        st.success(f"✅ {len(text)} chars")
+                    text_extracted = detector.extract_text_from_file(file)
+                    if text_extracted:
+                        st.success(f"✅ {len(text_extracted)} chars")
                 
-                text = st.text_area("Or paste", value=text, height=80, key=f"ct{i}")
+                text = st.text_area("Or paste", value=text_extracted, height=80, key=f"ct{i}")
                 
                 if text and text.strip():
                     assigns[name] = text
         
-        if st.button("🔍 Compare All", type="primary"):
+        if st.button("🔍 Compare", type="primary"):
             if len(assigns) < 2:
-                st.error("Need at least 2 assignments")
+                st.error("Need 2+ assignments")
             else:
                 try:
                     matrix, names = detector.compare_assignments(assigns)
                     
-                    st.success("✅ Comparison Complete!")
+                    st.success("✅ Done!")
                     
-                    st.subheader("📊 Similarity Matrix")
                     df = pd.DataFrame(matrix * 100, columns=names, index=names)
                     st.dataframe(df.style.background_gradient(cmap='Reds', vmin=0, vmax=100).format("{:.1f}%"), use_container_width=True)
-                    
-                    st.divider()
                     
                     suspicious = []
                     for i in range(len(names)):
                         for j in range(i+1, len(names)):
                             sim = matrix[i][j] * 100
                             if sim > 50:
-                                suspicious.append({
-                                    'Pair': f"{names[i]} ↔ {names[j]}",
-                                    'Similarity': f"{sim:.1f}%"
-                                })
+                                suspicious.append({'Pair': f"{names[i]} ↔ {names[j]}", 'Similarity': f"{sim:.1f}%"})
                     
                     if suspicious:
-                        st.error(f"🚨 Found {len(suspicious)} suspicious pair(s)")
+                        st.error(f"🚨 {len(suspicious)} suspicious")
                         st.dataframe(pd.DataFrame(suspicious), use_container_width=True)
                     else:
-                        st.success("✅ All assignments unique")
+                        st.success("✅ All unique")
                 
                 except Exception as e:
-                    st.error(f"Comparison error: {e}")
+                    st.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
