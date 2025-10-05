@@ -450,7 +450,7 @@ def main():
     
     with tab1:
         st.header("Single Document Originality Check")
-        st.info("📌 Upload PDF, DOCX, or **images (handwritten/printed)** - OCR automatically extracts text!")
+        st.info("📌 Upload PDF, DOCX, or **images (handwritten/printed)** - Text auto-loads after extraction!")
         
         col1, col2 = st.columns([2, 1])
         
@@ -463,42 +463,30 @@ def main():
                 key="f1"
             )
             
-            # Initialize session state
-            if 'text_content' not in st.session_state:
-                st.session_state.text_content = ""
-            
-            extracted_content = ""
+            # Store extracted text in a container variable
+            extracted_text1 = ""
             
             if file1 is not None:
                 with st.spinner("🔄 Extracting text..."):
-                    extracted_content = system.extract_text_from_file(file1)
+                    extracted_text1 = system.extract_text_from_file(file1)
                 
-                if extracted_content and len(extracted_content.strip()) > 0:
-                    st.success(f"✅ Extracted {len(extracted_content)} characters")
-                    
-                    # Button to load text
-                    if st.button("📥 Load Extracted Text into Editor", key="load_btn", type="secondary"):
-                        st.session_state.text_content = extracted_content
-                        st.rerun()
+                if extracted_text1 and len(extracted_text1.strip()) > 0:
+                    st.success(f"✅ Extracted {len(extracted_text1)} characters - Text loaded below!")
                     
                     if file1.type in ["image/png", "image/jpeg", "image/jpg"]:
                         with st.expander("View Uploaded Image"):
                             st.image(file1, use_column_width=True)
                 else:
                     st.warning("⚠️ No text extracted")
+                    extracted_text1 = ""
             
-            # Text area
+            # Text area - use extracted_text1 directly as default value
             text1 = st.text_area(
-                "Or paste text directly", 
-                value=st.session_state.text_content,
+                "Text automatically loaded (you can edit)", 
+                value=extracted_text1,
                 height=400, 
-                key="submission_text",
-                placeholder="Enter student's assignment or click 'Load Extracted Text' button above..."
+                placeholder="Upload a file above or paste text directly here..."
             )
-            
-            # Update session state when manually typing
-            if text1 != st.session_state.text_content:
-                st.session_state.text_content = text1
         
         with col2:
             st.subheader("Optional: Previous Work")
@@ -510,32 +498,23 @@ def main():
                 key="f2"
             )
             
-            if 'prev_content' not in st.session_state:
-                st.session_state.prev_content = ""
-            
-            extracted_prev = ""
+            extracted_text2 = ""
             
             if file2 is not None:
                 with st.spinner("🔄 Extracting..."):
-                    extracted_prev = system.extract_text_from_file(file2)
+                    extracted_text2 = system.extract_text_from_file(file2)
                 
-                if extracted_prev and len(extracted_prev.strip()) > 0:
-                    st.success(f"✅ Extracted {len(extracted_prev)} characters")
-                    
-                    if st.button("📥 Load Previous Text", key="load_prev_btn", type="secondary"):
-                        st.session_state.prev_content = extracted_prev
-                        st.rerun()
+                if extracted_text2 and len(extracted_text2.strip()) > 0:
+                    st.success(f"✅ Extracted {len(extracted_text2)} characters")
+                else:
+                    extracted_text2 = ""
             
             text2 = st.text_area(
-                "Or paste previous work", 
-                value=st.session_state.prev_content, 
+                "Text automatically loaded", 
+                value=extracted_text2, 
                 height=200, 
-                key="previous_text",
-                placeholder="Optional: Previous assignment..."
+                placeholder="Upload previous work or paste here..."
             )
-            
-            if text2 != st.session_state.prev_content:
-                st.session_state.prev_content = text2
             
             st.divider()
             st.markdown("**Detection Features:**")
@@ -551,7 +530,7 @@ def main():
             submission_text = text1.strip()
             
             if not submission_text or len(submission_text) < 10:
-                st.error("Please provide the assignment text. If you uploaded a file, click the 'Load Extracted Text' button first.")
+                st.error("Please provide the assignment text by uploading a file or pasting text.")
             else:
                 with st.spinner("🔄 Analyzing originality..."):
                     paras = [p.strip() for p in submission_text.split('\n\n') if len(p.strip()) > 100]
@@ -628,7 +607,7 @@ def main():
     
     with tab2:
         st.header("Compare Multiple Assignments")
-        st.info("📌 Upload assignments in any format with OCR!")
+        st.info("📌 Upload assignments - text auto-loads after extraction!")
         
         n = st.number_input("Number of assignments", 2, 20, 3)
         
@@ -641,9 +620,7 @@ def main():
                 name = st.text_input(f"Name", f"Student_{i+1}", key=f"n{i}")
                 file = st.file_uploader("Upload", type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], key=f"cf{i}")
                 
-                # Session state for comparison mode
-                if f'comp_extracted_{i}' not in st.session_state:
-                    st.session_state[f'comp_extracted_{i}'] = ""
+                extracted = ""
                 
                 if file is not None:
                     with st.spinner(f"Extracting {name}'s text..."):
@@ -652,17 +629,13 @@ def main():
                     if extracted:
                         st.success(f"✅ {len(extracted)} chars")
                         
-                        if st.button(f"📥 Load Text", key=f"load_comp_{i}", type="secondary"):
-                            st.session_state[f'comp_extracted_{i}'] = extracted
-                            st.rerun()
-                        
                         if file.type in ["image/png", "image/jpeg", "image/jpg"]:
                             with st.expander("View"):
                                 st.image(file, use_column_width=True)
                 
                 text = st.text_area(
-                    "Or paste", 
-                    value=st.session_state[f'comp_extracted_{i}'], 
+                    "Text auto-loaded", 
+                    value=extracted, 
                     height=150, 
                     key=f"ctext{i}"
                 )
@@ -709,26 +682,22 @@ def main():
         - **80+ Languages** supported
         - **OCR** for handwritten/printed text
         - **PDF, DOCX, Images** supported
+        - **Auto-loading** text after extraction
         - **No references needed** for originality
-        - **Compare multiple** assignments
         
         ### 🔬 Detection Methods
-        1. Semantic similarity (meaning)
-        2. Document fingerprinting (winnowing)
-        3. Stylometric analysis (writing style)
-        4. Novelty detection (sentence-level)
-        5. Intrinsic detection (internal consistency)
+        1. Semantic similarity
+        2. Document fingerprinting
+        3. Stylometric analysis
+        4. Novelty detection
+        5. Intrinsic detection
         
         ### 📖 How to Use
+        1. Upload file (PDF/DOCX/Image)
+        2. Text automatically loads in editor
+        3. Click "Check Originality"
         
-        **Step 1:** Upload your file (PDF/DOCX/Image)
-        **Step 2:** Click "Load Extracted Text" button
-        **Step 3:** Click "Check Originality"
-        
-        ### 💡 Tips
-        **For OCR:** Use good lighting, clear handwriting, no shadows
-        
-        **Supported Languages:** English, Spanish, French, German, Hindi, Arabic, Chinese, Japanese, Korean, and 70+ more!
+        **That's it!** No extra buttons needed.
         """)
 
 if __name__ == "__main__":
