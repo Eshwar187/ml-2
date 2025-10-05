@@ -198,14 +198,14 @@ class PlagiarismDetectionSystem:
     def __init__(self, performance_mode="balanced"):
         # Multilingual embedding models
         self.embedding_models = {
-            "fast": "paraphrase-multilingual-MiniLM-L12-v2",  # 50+ languages
-            "balanced": "paraphrase-multilingual-mpnet-base-v2",  # 50+ languages
-            "best": "sentence-transformers/LaBSE"  # 109 languages
+            "fast": "paraphrase-multilingual-MiniLM-L12-v2",
+            "balanced": "paraphrase-multilingual-mpnet-base-v2",
+            "best": "paraphrase-multilingual-mpnet-base-v2"
         }
         
         self.cross_encoders = {
-            "fast": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",  # Multilingual
-            "best": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+            "fast": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+            "best": "cross-encoder/ms-marco-MiniLM-L-12-v2"
         }
         
         with st.spinner("🔄 Loading multilingual AI models..."):
@@ -227,20 +227,28 @@ class PlagiarismDetectionSystem:
         self.novelty_detector = NoveltyDetector(self.embedding_model)
         self.ocr_reader = None
     
-    def load_ocr(self, languages=['en', 'hi', 'ar', 'zh_sim', 'es', 'fr', 'de', 'ja', 'ko', 'ru']):
-        """Load multilingual OCR with specified languages"""
+    def load_ocr(self):
+        """Load multilingual OCR"""
         if self.ocr_reader is None:
             with st.spinner("🔄 Loading multilingual OCR..."):
-                # EasyOCR supports 80+ languages
-                self.ocr_reader = easyocr.Reader(languages, gpu=False)
+                # Load with common languages - add more as needed
+                self.ocr_reader = easyocr.Reader(
+                    ['en', 'hi', 'ar', 'zh_sim', 'es', 'fr', 'de', 'ja', 'ko', 'ru'],
+                    gpu=False
+                )
         return self.ocr_reader
     
     def extract_text_from_image(self, image):
         """Extract text from image using multilingual OCR"""
-        reader = self.load_ocr()
-        img_array = np.array(image)
-        results = reader.readtext(img_array, detail=0)
-        return '\n'.join(results)
+        try:
+            reader = self.load_ocr()
+            img_array = np.array(image)
+            results = reader.readtext(img_array, detail=0)
+            extracted_text = '\n'.join(results)
+            return extracted_text if extracted_text else ""
+        except Exception as e:
+            st.error(f"OCR Error: {e}")
+            return ""
     
     def extract_text_from_pdf(self, pdf_file):
         """Extract text from PDF"""
@@ -248,10 +256,12 @@ class PlagiarismDetectionSystem:
             pdf_reader = PyPDF2.PdfReader(pdf_file)
             text = ""
             for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
             return text.strip()
         except Exception as e:
-            st.error(f"Error reading PDF: {e}")
+            st.error(f"PDF Error: {e}")
             return ""
     
     def extract_text_from_docx(self, docx_file):
@@ -264,12 +274,13 @@ class PlagiarismDetectionSystem:
             doc = Document(tmp_path)
             text = ""
             for paragraph in doc.paragraphs:
-                text += paragraph.text + "\n"
+                if paragraph.text:
+                    text += paragraph.text + "\n"
             
             os.unlink(tmp_path)
             return text.strip()
         except Exception as e:
-            st.error(f"Error reading DOCX: {e}")
+            st.error(f"DOCX Error: {e}")
             return ""
     
     def extract_text_from_file(self, uploaded_file):
@@ -277,23 +288,28 @@ class PlagiarismDetectionSystem:
         if uploaded_file is None:
             return ""
         
-        file_type = uploaded_file.type
+        try:
+            file_type = uploaded_file.type
+            
+            # PDF files
+            if file_type == "application/pdf":
+                return self.extract_text_from_pdf(uploaded_file)
+            
+            # DOCX files
+            elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                return self.extract_text_from_docx(uploaded_file)
+            
+            # Image files (OCR)
+            elif file_type in ["image/png", "image/jpeg", "image/jpg"]:
+                image = Image.open(uploaded_file)
+                return self.extract_text_from_image(image)
+            
+            else:
+                st.warning(f"Unsupported file type: {file_type}")
+                return ""
         
-        # PDF files
-        if file_type == "application/pdf":
-            return self.extract_text_from_pdf(uploaded_file)
-        
-        # DOCX files
-        elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            return self.extract_text_from_docx(uploaded_file)
-        
-        # Image files (OCR)
-        elif file_type in ["image/png", "image/jpeg", "image/jpg"]:
-            image = Image.open(uploaded_file)
-            return self.extract_text_from_image(image)
-        
-        else:
-            st.error(f"Unsupported file type: {file_type}")
+        except Exception as e:
+            st.error(f"File extraction error: {e}")
             return ""
     
     def compare_multiple_assignments(self, assignments_dict):
@@ -363,7 +379,13 @@ class PlagiarismDetectionSystem:
         for i, ref_text in enumerate(reference_texts):
             ref_embedding = self.embedding_model.encode([ref_text], show_progress_bar=False)[0]
             bi_similarity = cosine_similarity([submitted_embedding], [ref_embedding])[0][0]
-            cross_similarity = self.cross_encoder.predict([(submitted_text[:512], ref_text[:512])])[0]
+            
+            # Cross-encoder
+            try:
+                cross_similarity = self.cross_encoder.predict([(submitted_text[:512], ref_text[:512])])[0]
+            except:
+                cross_similarity = bi_similarity
+            
             combined_score = (bi_similarity * 0.6 + float(cross_similarity) * 0.4)
             
             results['semantic_similarity'][f'Reference_{i+1}'] = {
@@ -497,7 +519,7 @@ def create_visualization(results):
         st.dataframe(df, use_container_width=True)
     
     if results['fingerprint_matching']:
-        st.subheader("🔍 Document Fingerprint Matching (Novel)")
+        st.subheader("🔍 Document Fingerprint Matching")
         
         fp_data = pd.DataFrame({
             'Reference': list(results['fingerprint_matching'].keys()),
@@ -507,7 +529,7 @@ def create_visualization(results):
         st.bar_chart(fp_data.set_index('Reference'))
     
     if results['novelty_detection']:
-        st.subheader("✨ Novelty Detection Analysis (Novel)")
+        st.subheader("✨ Novelty Detection Analysis")
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -525,7 +547,7 @@ def create_visualization(results):
                 st.divider()
     
     if results['stylometric_analysis']:
-        st.subheader("📝 Writing Style Analysis (Novel)")
+        st.subheader("📝 Writing Style Analysis")
         
         if 'features' in results['stylometric_analysis']:
             features_df = pd.DataFrame([results['stylometric_analysis']['features']])
@@ -535,12 +557,11 @@ def create_visualization(results):
             consistency = results['stylometric_analysis']['consistency_with_history']
             st.metric(
                 "Style Consistency with Previous Work", 
-                f"{consistency:.2%}",
-                delta="Consistent" if consistency > 0.7 else "Inconsistent"
+                f"{consistency:.2%}"
             )
     
     if results['intrinsic_detection']:
-        st.subheader("🔎 Intrinsic Plagiarism Detection (Novel)")
+        st.subheader("🔎 Intrinsic Plagiarism Detection")
         
         avg_consistency = results['intrinsic_detection']['avg_style_consistency']
         suspicious = results['intrinsic_detection']['suspicious']
@@ -554,7 +575,7 @@ def create_visualization(results):
 
 def main():
     st.title("🔍 Advanced Plagiarism Detection System")
-    st.markdown("### Multilingual Detection: Originality Check & Assignment Comparison")
+    st.markdown("### Multilingual Detection with OCR Support")
     
     # Sidebar
     with st.sidebar:
@@ -563,52 +584,31 @@ def main():
         performance_mode = st.selectbox(
             "Performance Mode",
             ["fast", "balanced", "best"],
-            index=1,
-            help="Best mode supports 109 languages"
+            index=1
         )
         
         st.divider()
         
-        st.header("🌍 Multilingual Support")
-        st.success("✅ Supports 80+ languages including:")
-        st.markdown("""
-        - **Asian**: Hindi, Chinese, Japanese, Korean, Arabic, Thai, Bengali
-        - **European**: English, Spanish, French, German, Russian, Italian
-        - **Indian**: Hindi, Tamil, Telugu, Kannada, Marathi, Bengali
-        - **And many more!**
-        """)
-        
-        st.divider()
-        
-        st.header("📚 Detection Modes")
-        st.markdown("""
-        **Mode 1: Originality Check**
-        - Check single document
-        - No references needed
-        - OCR for handwriting
-        
-        **Mode 2: Assignment Comparison**
-        - Compare multiple submissions
-        - Detect collusion
-        - OCR compatible
-        """)
+        st.header("🌍 Features")
+        st.success("✅ 80+ Languages")
+        st.success("✅ OCR for Handwriting")
+        st.success("✅ PDF, DOCX, Images")
+        st.success("✅ No References Needed")
     
     # Load system
     system = load_system(performance_mode)
     
     # Main tabs
     tab1, tab2, tab3 = st.tabs([
-        "📝 Originality Check (Turnitin Mode)", 
+        "📝 Originality Check", 
         "🔄 Compare Assignments",
         "ℹ️ About"
     ])
     
-    # TAB 1: ORIGINALITY CHECK MODE
+    # TAB 1: ORIGINALITY CHECK
     with tab1:
         st.header("Single Document Originality Check")
-        st.markdown("*Check one assignment for plagiarism (Works with PDF, DOCX, and Images)*")
-        
-        st.info("📌 Upload any file type: PDF, Word documents, or **images (handwritten/printed)** - OCR automatically extracts text!")
+        st.info("📌 Upload PDF, DOCX, or **images (handwritten/printed)** - OCR automatically extracts text!")
         
         col1, col2 = st.columns([2, 1])
         
@@ -618,8 +618,7 @@ def main():
             uploaded_file = st.file_uploader(
                 "Upload Assignment (PDF/DOCX/Image)",
                 type=['pdf', 'docx', 'png', 'jpg', 'jpeg'],
-                key="orig_student_file",
-                help="Upload PDF, Word document, or image (for handwritten assignments)"
+                key="orig_student_file"
             )
             
             submitted_text = ""
@@ -629,38 +628,34 @@ def main():
                     submitted_text = system.extract_text_from_file(uploaded_file)
                 
                 if submitted_text:
-                    st.success(f"✅ Extracted {len(submitted_text)} characters from {uploaded_file.name}")
+                    st.success(f"✅ Extracted {len(submitted_text)} characters")
                     
-                    # Show preview if image
                     if uploaded_file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                        with st.expander("View Uploaded Image"):
+                        with st.expander("View Image"):
                             st.image(uploaded_file, use_column_width=True)
                 else:
-                    st.error("❌ No text extracted. Check if document has readable content.")
+                    st.warning("⚠️ No text extracted. File may be empty or corrupted.")
             
             submitted_text = st.text_area(
                 "Or paste text directly",
                 value=submitted_text,
                 height=400,
-                key="orig_text_area",
-                placeholder="Enter the student's assignment text here..."
+                key="orig_text_area"
             )
         
         with col2:
             st.subheader("Optional: Previous Work")
-            st.caption("For style comparison & self-plagiarism detection")
             
             prev_work_file = st.file_uploader(
                 "Upload Previous Assignment",
                 type=['pdf', 'docx', 'png', 'jpg', 'jpeg'],
-                key="orig_prev_file",
-                help="Optional: Check for self-plagiarism (any format)"
+                key="orig_prev_file"
             )
             
             student_history = ""
             
             if prev_work_file:
-                with st.spinner("🔄 Extracting text..."):
+                with st.spinner("🔄 Extracting..."):
                     student_history = system.extract_text_from_file(prev_work_file)
                 
                 if student_history:
@@ -670,35 +665,22 @@ def main():
                 "Or paste previous work",
                 value=student_history,
                 height=200,
-                key="orig_history",
-                placeholder="Previous assignment (optional)..."
+                key="orig_history"
             )
-            
-            st.divider()
-            
-            st.markdown("**Detection Features:**")
-            st.markdown("""
-            - ✅ Semantic similarity analysis
-            - ✅ Writing style fingerprinting
-            - ✅ Intrinsic plagiarism detection
-            - ✅ Sentence-level originality
-            - ✅ OCR for handwritten text
-            - ✅ 80+ language support
-            """)
         
-        if st.button("🔍 Check Originality", type="primary", key="orig_analyze"):
+        if st.button("🔍 Check Originality", type="primary"):
             if not submitted_text:
-                st.error("Please provide the submitted assignment.")
+                st.error("Please provide the assignment text.")
             else:
-                with st.spinner("🔄 Analyzing originality... This may take a moment."):
+                with st.spinner("🔄 Analyzing..."):
                     paragraphs = [p.strip() for p in submitted_text.split('\n\n') if len(p.strip()) > 100]
                     
                     if len(paragraphs) < 2:
                         sentences = sent_tokenize(submitted_text)
                         mid_point = len(sentences) // 2
                         reference_texts = [
-                            ' '.join(sentences[:mid_point]),
-                            ' '.join(sentences[mid_point:])
+                            ' '.join(sentences[:mid_point]) if mid_point > 0 else submitted_text[:len(submitted_text)//2],
+                            ' '.join(sentences[mid_point:]) if mid_point > 0 else submitted_text[len(submitted_text)//2:]
                         ]
                     else:
                         reference_texts = paragraphs[:2]
@@ -731,106 +713,61 @@ def main():
                     
                     originality = max(0, min(100, originality))
                     
-                    st.success("✅ Originality Check Complete!")
+                    st.success("✅ Analysis Complete!")
                     
-                    # Display results
                     col1, col2, col3 = st.columns(3)
                     with col1:
                         color = "🟢" if originality > 75 else "🟡" if originality > 50 else "🔴"
-                        st.metric(
-                            "Originality Score",
-                            f"{color} {originality:.1f}%",
-                            help="Percentage of original content"
-                        )
+                        st.metric("Originality Score", f"{color} {originality:.1f}%")
                     with col2:
-                        st.metric(
-                            "Similarity Index",
-                            f"{100-originality:.1f}%",
-                            help="Turnitin-style similarity percentage"
-                        )
+                        st.metric("Similarity Index", f"{100-originality:.1f}%")
                     with col3:
                         risk = "Low" if originality > 75 else "Medium" if originality > 50 else "High"
-                        st.metric(
-                            "Plagiarism Risk",
-                            risk
-                        )
+                        st.metric("Risk", risk)
                     
                     st.divider()
-                    
-                    st.subheader("📊 Interpretation Guide")
-                    
-                    if originality > 90:
-                        st.success("✅ **Excellent Originality** - This work appears to be highly original.")
-                    elif originality > 75:
-                        st.info("ℹ️ **Good Originality** - This work shows good originality.")
-                    elif originality > 50:
-                        st.warning("⚠️ **Moderate Concern** - Review the detailed analysis below.")
-                    else:
-                        st.error("🚨 **High Risk** - Detailed review recommended.")
-                    
-                    st.divider()
-                    
                     create_visualization(results)
                     
-                    with st.expander("📥 Export Detailed Report"):
-                        export_results = results.copy()
-                        export_results['originality_score'] = originality
-                        export_results['similarity_index'] = 100 - originality
-                        st.json(export_results)
+                    with st.expander("📥 Export Report"):
+                        st.json(results)
     
-    # TAB 2: ASSIGNMENT COMPARISON MODE
+    # TAB 2: COMPARISON MODE
     with tab2:
-        st.header("Compare Multiple Assignments (Collusion Detection)")
-        st.markdown("*Upload multiple student assignments to check for copying between students*")
+        st.header("Compare Multiple Assignments")
+        st.info("📌 Upload assignments in any format: PDF, DOCX, or **images** with OCR!")
         
-        st.info("📌 Supports PDF, DOCX, and **images (handwritten)** - OCR automatically extracts text from all formats!")
-        
-        num_assignments = st.number_input(
-            "Number of assignments to compare",
-            min_value=2,
-            max_value=20,
-            value=3,
-            key="comp_num"
-        )
+        num_assignments = st.number_input("Number of assignments", 2, 20, 3)
         
         assignments = {}
-        
         cols = st.columns(2)
         
         for i in range(num_assignments):
-            col_idx = i % 2
-            with cols[col_idx]:
+            with cols[i % 2]:
                 st.subheader(f"Student {i+1}")
                 
                 student_name = st.text_input(
-                    f"Student {i+1} Name",
+                    f"Name",
                     value=f"Student_{i+1}",
                     key=f"comp_name_{i}"
                 )
                 
                 uploaded_file = st.file_uploader(
-                    f"Upload Assignment (any format)",
+                    "Upload",
                     type=['pdf', 'docx', 'png', 'jpg', 'jpeg'],
-                    key=f"comp_file_{i}",
-                    help="Upload PDF, DOCX, or image (handwritten/printed)"
+                    key=f"comp_file_{i}"
                 )
                 
                 assignment_text = ""
                 
                 if uploaded_file:
-                    with st.spinner(f"🔄 Extracting text from {student_name}'s assignment..."):
+                    with st.spinner("🔄 Extracting..."):
                         assignment_text = system.extract_text_from_file(uploaded_file)
                     
                     if assignment_text:
-                        st.success(f"✅ {len(assignment_text)} characters")
-                        
-                        # Show preview if image
-                        if uploaded_file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                            with st.expander("View Image"):
-                                st.image(uploaded_file, use_column_width=True)
+                        st.success(f"✅ {len(assignment_text)} chars")
                 
                 assignment_text = st.text_area(
-                    f"Or paste text",
+                    "Or paste",
                     value=assignment_text,
                     height=150,
                     key=f"comp_text_{i}"
@@ -839,18 +776,16 @@ def main():
                 if assignment_text:
                     assignments[student_name] = assignment_text
         
-        if st.button("🔍 Compare All Assignments", type="primary", key="comp_analyze"):
+        if st.button("🔍 Compare All", type="primary"):
             if len(assignments) < 2:
-                st.error("Please provide at least 2 assignments to compare.")
+                st.error("Need at least 2 assignments.")
             else:
-                with st.spinner("🔄 Comparing assignments..."):
+                with st.spinner("🔄 Comparing..."):
                     similarity_matrix, detailed_comparisons, student_names = system.compare_multiple_assignments(assignments)
                     
-                    st.success("✅ Comparison Complete!")
+                    st.success("✅ Complete!")
                     
-                    # Display similarity matrix
                     st.subheader("📊 Similarity Matrix")
-                    st.markdown("*Higher scores indicate potential copying/collusion*")
                     
                     df_matrix = pd.DataFrame(
                         similarity_matrix,
@@ -865,8 +800,7 @@ def main():
                     
                     st.divider()
                     
-                    # Show suspicious pairs
-                    st.subheader("⚠️ Suspicious Pairs (Similarity > 50%)")
+                    st.subheader("⚠️ Suspicious Pairs (>50%)")
                     
                     suspicious_pairs = []
                     for pair_key, comparison in detailed_comparisons.items():
@@ -879,130 +813,63 @@ def main():
                             })
                     
                     if suspicious_pairs:
-                        df_suspicious = pd.DataFrame(suspicious_pairs)
-                        st.dataframe(df_suspicious, use_container_width=True)
-                        
-                        st.warning(f"🚨 Found {len(suspicious_pairs)} suspicious pair(s) with high similarity!")
+                        st.dataframe(pd.DataFrame(suspicious_pairs), use_container_width=True)
+                        st.warning(f"🚨 Found {len(suspicious_pairs)} suspicious pair(s)!")
                     else:
-                        st.success("✅ No suspicious similarities detected. All assignments appear unique.")
+                        st.success("✅ No suspicious similarities detected.")
                     
-                    st.divider()
-                    
-                    with st.expander("📋 View All Pairwise Comparisons"):
-                        for pair_key, comparison in detailed_comparisons.items():
-                            st.markdown(f"**{pair_key}**")
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("Combined Score", f"{comparison['combined_score']:.1%}")
-                            with col2:
-                                st.metric("Semantic", f"{comparison['semantic_similarity']:.1%}")
-                            with col3:
-                                st.metric("Fingerprint", f"{comparison['fingerprint_similarity']:.1%}")
-                            st.divider()
-                    
-                    with st.expander("📥 Export Comparison Report"):
-                        export_data = {
-                            'similarity_matrix': df_matrix.to_dict(),
-                            'detailed_comparisons': detailed_comparisons,
-                            'suspicious_pairs': suspicious_pairs
-                        }
-                        st.json(export_data)
+                    with st.expander("📥 Export"):
+                        st.json({
+                            'matrix': df_matrix.to_dict(),
+                            'comparisons': detailed_comparisons,
+                            'suspicious': suspicious_pairs
+                        })
     
     # TAB 3: ABOUT
     with tab3:
-        st.header("About This System")
+        st.header("About")
         
         st.markdown("""
         ### 🎯 Features
         
-        #### Multilingual Support (80+ Languages)
-        - **EasyOCR** supports handwritten and printed text in 80+ languages
-        - **Sentence Transformers** provide multilingual semantic understanding
-        - Works with Asian, European, Indian, and Arabic scripts
+        - **80+ Languages** - Hindi, Arabic, Chinese, Japanese, Korean, and more
+        - **OCR Support** - Handwritten and printed text extraction
+        - **Multiple Formats** - PDF, DOCX, PNG, JPG, JPEG
+        - **Two Modes** - Originality check and assignment comparison
+        - **Novel Detection** - 5 unique plagiarism detection methods
         
-        #### Universal File Support
-        - **PDF** - Printed assignments
-        - **DOCX** - Microsoft Word documents
-        - **Images (PNG/JPG/JPEG)** - Handwritten or printed assignments
-        - **Automatic OCR** - Text extraction from images
+        ### 🔬 Detection Methods
         
-        #### Two Detection Modes
+        1. **Semantic Similarity** - Meaning-based comparison
+        2. **Document Fingerprinting** - Winnowing algorithm
+        3. **Stylometric Analysis** - Writing style patterns
+        4. **Novelty Detection** - Sentence-level originality
+        5. **Intrinsic Detection** - Internal consistency check
         
-        **Mode 1: Originality Check (Turnitin-like)**
-        - Single document analysis
-        - No external references needed
-        - OCR for handwriting
-        - 80+ language support
+        ### 📊 How to Use
         
-        **Mode 2: Assignment Comparison (Collusion Detection)**
-        - Compare multiple submissions
-        - Detect student-to-student copying
-        - Works with mixed formats (PDF + images + DOCX)
-        - Multilingual support
+        **Originality Check:**
+        - Upload one document (any format)
+        - System analyzes for plagiarism
+        - No reference documents needed
+        - Get originality percentage
         
-        ### 🔬 Novel Detection Methods
+        **Comparison Mode:**
+        - Upload 2-20 student assignments
+        - System compares all against each other
+        - Detects collusion and copying
+        - Color-coded similarity matrix
         
-        **1. Stylometric Fingerprinting**  
-        Analyzes writing style patterns unique to each author
+        ### 💡 Tips
         
-        **2. Winnowing Algorithm**  
-        Efficient document fingerprinting for exact matching
+        **For Best OCR Results:**
+        - Use good lighting
+        - Clear, readable handwriting
+        - No shadows or glare
+        - Straight-on photos
         
-        **3. Sentence-Level Novelty**  
-        Identifies which specific sentences are plagiarized
-        
-        **4. Intrinsic Detection**  
-        Detects style inconsistencies without external sources
-        
-        **5. Multilingual Semantic Analysis**  
-        Cross-language plagiarism detection
-        
-        ### 🌍 Supported Languages
-        
-        **Asian Languages:**
-        Hindi, Chinese (Simplified & Traditional), Japanese, Korean, Arabic, Thai, Bengali, Tamil, Telugu, Kannada, Marathi, Urdu, Vietnamese
-        
-        **European Languages:**
-        English, Spanish, French, German, Italian, Russian, Portuguese, Dutch, Polish, Turkish, Greek, Romanian
-        
-        **And 50+ more languages!**
-        
-        ### 📈 How It Works
-        
-        **For PDFs/DOCX:** Direct text extraction
-        
-        **For Images:** 
-        1. EasyOCR detects text regions
-        2. Recognizes characters in 80+ languages
-        3. Extracts complete text
-        4. Processes like any other document
-        
-        **For Handwritten Text:**
-        - OCR trained on diverse handwriting samples
-        - Works best with clear, readable handwriting
-        - Supports cursive and print styles
-        
-        ### 💡 Tips for Best Results
-        
-        **For Handwritten Assignments:**
-        - Use good lighting when photographing
-        - Ensure text is clear and legible
-        - Avoid shadows or glare
-        - Take photo straight-on (not at an angle)
-        
-        **For Digital Documents:**
-        - PDF and DOCX work best
-        - Ensure documents are text-based (not scanned images)
-        - Use high-quality scans if converting from paper
-        
-        ### 🚀 Why This is Better
-        
-        Unlike traditional tools:
-        - **No reference database needed** for Turnitin mode
-        - **OCR integrated** in all file uploads
-        - **Multilingual** from the ground up
-        - **Multiple formats** supported simultaneously
-        - **Handwriting compatible** through advanced OCR
+        **Supported Languages:**
+        English, Spanish, French, German, Italian, Portuguese, Russian, Chinese, Japanese, Korean, Arabic, Hindi, Tamil, Telugu, Bengali, Marathi, and 60+ more!
         """)
 
 if __name__ == "__main__":
