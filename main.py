@@ -1,7 +1,6 @@
 import streamlit as st
 import torch
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import nltk
@@ -12,17 +11,33 @@ import hashlib
 import easyocr
 from PIL import Image
 import io
-import matplotlib.pyplot as plt
-import seaborn as sns
 import pandas as pd
+import PyPDF2
+import docx
+import tempfile
+import os
 
-# Download required NLTK data
-try:
-    nltk.data.find('tokenizers/punkt')
-except:
-    nltk.download('punkt')
-    nltk.download('averaged_perceptron_tagger')
-    nltk.download('stopwords')
+# Configure page first (must be first Streamlit command)
+st.set_page_config(page_title="AI Plagiarism Detector", layout="wide", page_icon="🔍")
+
+# Download NLTK data with better error handling
+@st.cache_resource
+def download_nltk_data():
+    """Download required NLTK data only once"""
+    try:
+        nltk.data.find('tokenizers/punkt')
+        nltk.data.find('taggers/averaged_perceptron_tagger')
+        nltk.data.find('corpora/stopwords')
+    except LookupError:
+        with st.spinner("Downloading language models..."):
+            nltk.download('punkt', quiet=True)
+            nltk.download('punkt_tab', quiet=True)  # New NLTK version requirement
+            nltk.download('averaged_perceptron_tagger', quiet=True)
+            nltk.download('averaged_perceptron_tagger_eng', quiet=True)  # New version
+            nltk.download('stopwords', quiet=True)
+
+# Call NLTK download
+download_nltk_data()
 
 class StylometricAnalyzer:
     """Novel Feature #1: Stylometric fingerprinting for authorship verification"""
@@ -32,22 +47,39 @@ class StylometricAnalyzer:
     
     def extract_stylometric_features(self, text):
         """Extract unique writing style features"""
-        sentences = sent_tokenize(text)
-        words = word_tokenize(text.lower())
-        pos_tags = pos_tag(word_tokenize(text))
+        if not text or len(text.strip()) < 10:
+            return self._empty_features()
         
-        # Calculate stylometric features
-        features = {
-            'avg_sentence_length': np.mean([len(word_tokenize(s)) for s in sentences]),
-            'sentence_length_std': np.std([len(word_tokenize(s)) for s in sentences]),
-            'type_token_ratio': len(set(words)) / len(words) if len(words) > 0 else 0,
-            'avg_word_length': np.mean([len(w) for w in words]),
-            'punctuation_density': sum(1 for c in text if c in '.,!?;:') / len(text),
-            'capital_letter_ratio': sum(1 for c in text if c.isupper()) / len(text),
-            'pos_distribution': dict(Counter([tag for _, tag in pos_tags]))
+        try:
+            sentences = sent_tokenize(text)
+            words = word_tokenize(text.lower())
+            pos_tags = pos_tag(word_tokenize(text))
+            
+            # Calculate stylometric features
+            features = {
+                'avg_sentence_length': np.mean([len(word_tokenize(s)) for s in sentences]) if sentences else 0,
+                'sentence_length_std': np.std([len(word_tokenize(s)) for s in sentences]) if sentences else 0,
+                'type_token_ratio': len(set(words)) / len(words) if len(words) > 0 else 0,
+                'avg_word_length': np.mean([len(w) for w in words]) if words else 0,
+                'punctuation_density': sum(1 for c in text if c in '.,!?;:') / len(text) if text else 0,
+                'capital_letter_ratio': sum(1 for c in text if c.isupper()) / len(text) if text else 0,
+                'pos_distribution': dict(Counter([tag for _, tag in pos_tags]))
+            }
+            return features
+        except Exception as e:
+            st.warning(f"Error extracting stylometric features: {e}")
+            return self._empty_features()
+    
+    def _empty_features(self):
+        return {
+            'avg_sentence_length': 0,
+            'sentence_length_std': 0,
+            'type_token_ratio': 0,
+            'avg_word_length': 0,
+            'punctuation_density': 0,
+            'capital_letter_ratio': 0,
+            'pos_distribution': {}
         }
-        
-        return features
     
     def calculate_style_similarity(self, features1, features2):
         """Calculate stylometric similarity between two text samples"""
@@ -69,18 +101,18 @@ class StylometricAnalyzer:
             features2['capital_letter_ratio']
         ]
         
-        # Normalize and calculate Euclidean distance
         features1_array = np.array(numerical_features1).reshape(1, -1)
         features2_array = np.array(numerical_features2).reshape(1, -1)
         
-        similarity = 1 / (1 + np.linalg.norm(features1_array - features2_array))
+        distance = np.linalg.norm(features1_array - features2_array)
+        similarity = 1 / (1 + distance)
         return similarity
 
 class DocumentFingerprinter:
     """Novel Feature #2: Winnowing-based document fingerprinting"""
     
     def __init__(self, k=5, window_size=4):
-        self.k = k  # k-gram size
+        self.k = k
         self.window_size = window_size
     
     def create_kgrams(self, text):
@@ -99,10 +131,9 @@ class DocumentFingerprinter:
     def winnow(self, hashes):
         """Apply winnowing algorithm to select fingerprints"""
         if len(hashes) < self.window_size:
-            return set(hashes)
+            return set((i, h) for i, h in enumerate(hashes))
         
         fingerprints = set()
-        min_pos = 0
         
         for i in range(len(hashes) - self.window_size + 1):
             window = hashes[i:i + self.window_size]
@@ -114,7 +145,13 @@ class DocumentFingerprinter:
     
     def get_fingerprint(self, text):
         """Generate document fingerprint"""
+        if not text or len(text) < self.k:
+            return set()
+        
         kgrams = self.create_kgrams(text)
+        if not kgrams:
+            return set()
+        
         hashes = self.hash_kgrams(kgrams)
         fingerprints = self.winnow(hashes)
         return fingerprints
@@ -124,7 +161,6 @@ class DocumentFingerprinter:
         if len(fp1) == 0 or len(fp2) == 0:
             return 0.0
         
-        # Extract just the hash values for comparison
         hashes1 = set(h for _, h in fp1)
         hashes2 = set(h for _, h in fp2)
         
@@ -149,15 +185,14 @@ class NoveltyDetector:
             all_source_sentences.extend(sent_tokenize(source))
         
         if not all_source_sentences:
-            return [(sent, 1.0, "Novel") for sent in target_sentences]
+            return [(sent, 1.0, "Novel", 0.0) for sent in target_sentences]
         
         # Encode all sentences
-        target_embeddings = self.model.encode(target_sentences)
-        source_embeddings = self.model.encode(all_source_sentences)
+        target_embeddings = self.model.encode(target_sentences, show_progress_bar=False)
+        source_embeddings = self.model.encode(all_source_sentences, show_progress_bar=False)
         
         results = []
         for i, (sentence, embedding) in enumerate(zip(target_sentences, target_embeddings)):
-            # Calculate maximum similarity with any source sentence
             similarities = cosine_similarity([embedding], source_embeddings)[0]
             max_similarity = np.max(similarities)
             
@@ -172,8 +207,6 @@ class PlagiarismDetectionSystem:
     """Main system integrating all novel features"""
     
     def __init__(self, performance_mode="balanced"):
-        st.info("🔄 Loading models... This may take a moment.")
-        
         # Embedding models
         self.embedding_models = {
             "fast": "paraphrase-multilingual-MiniLM-L12-v2",
@@ -187,11 +220,20 @@ class PlagiarismDetectionSystem:
             "best": "cross-encoder/stsb-roberta-large"
         }
         
-        # Load models based on performance mode
-        self.embedding_model = SentenceTransformer(self.embedding_models[performance_mode])
-        
-        encoder_mode = "fast" if performance_mode == "fast" else "best"
-        self.cross_encoder = CrossEncoder(self.cross_encoders[encoder_mode])
+        # Load models with device handling
+        with st.spinner("🔄 Loading AI models..."):
+            device = "cpu"  # Force CPU for Streamlit Cloud stability
+            self.embedding_model = SentenceTransformer(
+                self.embedding_models[performance_mode],
+                device=device
+            )
+            
+            encoder_mode = "fast" if performance_mode == "fast" else "best"
+            self.cross_encoder = CrossEncoder(
+                self.cross_encoders[encoder_mode],
+                device=device,
+                max_length=512
+            )
         
         # Initialize novel components
         self.stylometric_analyzer = StylometricAnalyzer()
@@ -204,22 +246,41 @@ class PlagiarismDetectionSystem:
     def load_ocr(self):
         """Lazy load OCR model"""
         if self.ocr_reader is None:
-            st.info("🔄 Loading OCR model...")
-            self.ocr_reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
+            with st.spinner("🔄 Loading OCR model..."):
+                self.ocr_reader = easyocr.Reader(['en'], gpu=False)
         return self.ocr_reader
     
     def extract_text_from_image(self, image):
         """Extract text from uploaded image using OCR"""
         reader = self.load_ocr()
-        
-        # Convert PIL image to numpy array
         img_array = np.array(image)
-        
-        # Perform OCR
         results = reader.readtext(img_array, detail=0)
         extracted_text = '\n'.join(results)
-        
         return extracted_text
+    
+    def extract_text_from_pdf(self, pdf_file):
+        """Extract text from PDF file"""
+        try:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+            return text.strip()
+        except Exception as e:
+            st.error(f"Error reading PDF: {e}")
+            return ""
+    
+    def extract_text_from_docx(self, docx_file):
+        """Extract text from DOCX file"""
+        try:
+            doc = docx.Document(docx_file)
+            text = ""
+            for paragraph in doc.paragraphs:
+                text += paragraph.text + "\n"
+            return text.strip()
+        except Exception as e:
+            st.error(f"Error reading DOCX: {e}")
+            return ""
     
     def analyze_plagiarism(self, submitted_text, reference_texts, student_history=None):
         """Comprehensive plagiarism analysis with novel features"""
@@ -233,20 +294,20 @@ class PlagiarismDetectionSystem:
             'overall_score': 0.0
         }
         
-        # 1. Semantic Similarity Analysis (Traditional)
-        submitted_embedding = self.embedding_model.encode([submitted_text])[0]
+        # 1. Semantic Similarity Analysis
+        submitted_embedding = self.embedding_model.encode([submitted_text], show_progress_bar=False)[0]
         
         for i, ref_text in enumerate(reference_texts):
-            ref_embedding = self.embedding_model.encode([ref_text])[0]
+            ref_embedding = self.embedding_model.encode([ref_text], show_progress_bar=False)[0]
             
             # Bi-encoder similarity
             bi_similarity = cosine_similarity([submitted_embedding], [ref_embedding])[0][0]
             
             # Cross-encoder reranking
-            cross_similarity = self.cross_encoder.predict([(submitted_text, ref_text)])[0]
+            cross_similarity = self.cross_encoder.predict([(submitted_text[:512], ref_text[:512])])[0]
             
             # Combine scores
-            combined_score = (bi_similarity * 0.6 + cross_similarity * 0.4)
+            combined_score = (bi_similarity * 0.6 + float(cross_similarity) * 0.4)
             
             results['semantic_similarity'][f'Reference_{i+1}'] = {
                 'bi_encoder_score': float(bi_similarity),
@@ -254,11 +315,10 @@ class PlagiarismDetectionSystem:
                 'combined_score': float(combined_score)
             }
         
-        # 2. Stylometric Analysis (NOVEL)
+        # 2. Stylometric Analysis
         submitted_features = self.stylometric_analyzer.extract_stylometric_features(submitted_text)
         
         if student_history:
-            # Compare with student's previous work
             history_features = self.stylometric_analyzer.extract_stylometric_features(student_history)
             style_consistency = self.stylometric_analyzer.calculate_style_similarity(
                 submitted_features, history_features
@@ -271,7 +331,7 @@ class PlagiarismDetectionSystem:
             for k, v in submitted_features.items() if k != 'pos_distribution'
         }
         
-        # 3. Document Fingerprinting (NOVEL)
+        # 3. Document Fingerprinting
         submitted_fingerprint = self.fingerprinter.get_fingerprint(submitted_text)
         
         for i, ref_text in enumerate(reference_texts):
@@ -281,7 +341,7 @@ class PlagiarismDetectionSystem:
             )
             results['fingerprint_matching'][f'Reference_{i+1}'] = float(fingerprint_similarity)
         
-        # 4. Novelty Detection (NOVEL)
+        # 4. Novelty Detection
         novelty_results = self.novelty_detector.detect_novel_sentences(submitted_text, reference_texts)
         
         novel_count = sum(1 for _, _, status, _ in novelty_results if status == "Novel")
@@ -302,8 +362,7 @@ class PlagiarismDetectionSystem:
             ]
         }
         
-        # 5. Intrinsic Plagiarism Detection (NOVEL)
-        # Detect style changes within the document
+        # 5. Intrinsic Plagiarism Detection
         paragraphs = submitted_text.split('\n\n')
         if len(paragraphs) > 1:
             paragraph_features = [
@@ -334,7 +393,6 @@ class PlagiarismDetectionSystem:
         max_fingerprint = max(fingerprint_scores) if fingerprint_scores else 0
         novelty_ratio = results['novelty_detection']['novelty_ratio']
         
-        # Weighted combination (giving more weight to novel features)
         overall_plagiarism = (
             max_semantic * 0.35 +
             max_fingerprint * 0.35 +
@@ -357,10 +415,14 @@ class PlagiarismDetectionSystem:
         else:
             return "✅ Minimal Risk"
 
+@st.cache_resource
+def load_system(performance_mode):
+    """Cache the plagiarism detection system"""
+    return PlagiarismDetectionSystem(performance_mode)
+
 def create_visualization(results):
     """Create visualizations for plagiarism analysis"""
     
-    # Semantic Similarity Comparison
     if results['semantic_similarity']:
         st.subheader("📊 Semantic Similarity Analysis")
         
@@ -378,7 +440,6 @@ def create_visualization(results):
         
         st.dataframe(df, use_container_width=True)
     
-    # Fingerprint Matching
     if results['fingerprint_matching']:
         st.subheader("🔍 Document Fingerprint Matching (Novel)")
         
@@ -389,7 +450,6 @@ def create_visualization(results):
         
         st.bar_chart(fp_data.set_index('Reference'))
     
-    # Novelty Detection
     if results['novelty_detection']:
         st.subheader("✨ Novelty Detection Analysis (Novel)")
         
@@ -401,15 +461,13 @@ def create_visualization(results):
         with col3:
             st.metric("Novelty Ratio", f"{results['novelty_detection']['novelty_ratio']:.2%}")
         
-        # Show sentence-level details
         with st.expander("View Sentence-Level Analysis"):
-            for detail in results['novelty_detection']['sentence_details'][:10]:  # Show first 10
+            for detail in results['novelty_detection']['sentence_details'][:10]:
                 status_color = "🟢" if detail['status'] == "Novel" else "🔴"
                 st.write(f"{status_color} **{detail['status']}** (Similarity: {detail['max_similarity']:.2%})")
                 st.write(f"_{detail['sentence']}_")
                 st.divider()
     
-    # Stylometric Analysis
     if results['stylometric_analysis']:
         st.subheader("📝 Writing Style Analysis (Novel)")
         
@@ -425,7 +483,6 @@ def create_visualization(results):
                 delta="Consistent" if consistency > 0.7 else "Inconsistent"
             )
     
-    # Intrinsic Detection
     if results['intrinsic_detection']:
         st.subheader("🔎 Intrinsic Plagiarism Detection (Novel)")
         
@@ -440,8 +497,6 @@ def create_visualization(results):
             st.metric("Status", status)
 
 def main():
-    st.set_page_config(page_title="AI Plagiarism Detector", layout="wide", page_icon="🔍")
-    
     st.title("🔍 Advanced Plagiarism Detection System")
     st.markdown("### With Novel Features: Stylometry, Fingerprinting & Novelty Detection")
     
@@ -462,34 +517,29 @@ def main():
         **1. Stylometric Analysis**
         - Writing style fingerprinting
         - Authorship verification
-        - Style consistency checking
         
         **2. Document Fingerprinting**
         - Winnowing algorithm
-        - Efficient similarity detection
         - Granular matching
         
         **3. Novelty Detection**
         - Sentence-level analysis
-        - Novel vs redundant identification
-        - Detailed attribution
+        - Novel vs redundant ID
         
         **4. Intrinsic Detection**
-        - Internal style variation analysis
+        - Internal style analysis
         - Multi-author detection
-        - Suspicious pattern identification
         
-        **5. OCR Support**
-        - Extract text from images
-        - Handwritten document analysis
+        **5. Multi-Format Support**
+        - PDF, DOCX, Images
+        - OCR for handwritten text
         """)
     
-    # Initialize system
-    if 'system' not in st.session_state:
-        st.session_state.system = PlagiarismDetectionSystem(performance_mode)
+    # Initialize system (cached)
+    system = load_system(performance_mode)
     
     # Main interface
-    tab1, tab2, tab3 = st.tabs(["📝 Text Input", "📷 OCR Input", "ℹ️ About"])
+    tab1, tab2, tab3 = st.tabs(["📝 Text/Document Input", "📷 OCR Input", "ℹ️ About"])
     
     with tab1:
         st.header("Submit Assignment for Analysis")
@@ -498,8 +548,28 @@ def main():
         
         with col1:
             st.subheader("Student Submission")
+            
+            # File upload option
+            uploaded_file = st.file_uploader(
+                "Upload Assignment (PDF/DOCX)",
+                type=['pdf', 'docx'],
+                help="Upload PDF or Word document"
+            )
+            
+            submitted_text = ""
+            
+            if uploaded_file:
+                if uploaded_file.type == "application/pdf":
+                    submitted_text = system.extract_text_from_pdf(uploaded_file)
+                elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                    submitted_text = system.extract_text_from_docx(uploaded_file)
+                
+                st.success(f"✅ Extracted {len(submitted_text)} characters from {uploaded_file.name}")
+            
+            # Text area (can override file upload)
             submitted_text = st.text_area(
-                "Paste the submitted assignment",
+                "Or paste text directly",
+                value=submitted_text,
                 height=300,
                 placeholder="Enter the student's assignment text here..."
             )
@@ -517,11 +587,25 @@ def main():
             
             reference_texts = []
             for i in range(num_references):
+                ref_file = st.file_uploader(
+                    f"Upload Reference {i+1} (PDF/DOCX)",
+                    type=['pdf', 'docx'],
+                    key=f"ref_file_{i}"
+                )
+                
+                ref_text = ""
+                if ref_file:
+                    if ref_file.type == "application/pdf":
+                        ref_text = system.extract_text_from_pdf(ref_file)
+                    elif ref_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                        ref_text = system.extract_text_from_docx(ref_file)
+                
                 ref_text = st.text_area(
                     f"Reference Document {i+1}",
+                    value=ref_text,
                     height=150,
                     key=f"ref_{i}",
-                    placeholder=f"Enter reference document {i+1}..."
+                    placeholder=f"Enter or upload reference document {i+1}..."
                 )
                 if ref_text:
                     reference_texts.append(ref_text)
@@ -533,21 +617,19 @@ def main():
                 st.error("Please provide at least one reference document.")
             else:
                 with st.spinner("🔄 Analyzing... This may take a moment."):
-                    results = st.session_state.system.analyze_plagiarism(
+                    results = system.analyze_plagiarism(
                         submitted_text,
                         reference_texts,
                         student_history if student_history else None
                     )
                     
-                    # Display overall results
                     st.success("✅ Analysis Complete!")
                     
                     col1, col2 = st.columns(2)
                     with col1:
                         st.metric(
                             "Overall Plagiarism Score",
-                            f"{results['overall_score']:.1%}",
-                            delta=results['risk_level']
+                            f"{results['overall_score']:.1%}"
                         )
                     with col2:
                         st.metric(
@@ -557,10 +639,8 @@ def main():
                     
                     st.divider()
                     
-                    # Detailed visualizations
                     create_visualization(results)
                     
-                    # Export results
                     with st.expander("📥 Export Detailed Report"):
                         st.json(results)
     
@@ -585,7 +665,7 @@ def main():
             with col2:
                 if st.button("🔍 Extract Text"):
                     with st.spinner("🔄 Extracting text from image..."):
-                        extracted_text = st.session_state.system.extract_text_from_image(image)
+                        extracted_text = system.extract_text_from_image(image)
                         
                         st.success("✅ Text extracted successfully!")
                         st.text_area(
@@ -602,69 +682,36 @@ def main():
         st.markdown("""
         ### 🎯 Novel Contributions
         
-        This plagiarism detection system goes beyond traditional LLM-based approaches by incorporating:
+        This plagiarism detection system goes beyond traditional approaches by incorporating:
         
         #### 1. **Stylometric Fingerprinting**
-        - Analyzes unique writing patterns (sentence structure, vocabulary, punctuation)
-        - Creates an "authorial fingerprint" for each student
-        - Detects inconsistencies in writing style within a single document
-        - Verifies authorship by comparing with previous student work
+        Analyzes unique writing patterns to create an "authorial fingerprint" for each student.
         
         #### 2. **Winnowing-based Document Fingerprinting**
-        - Uses efficient hash-based fingerprinting algorithm
-        - Detects near-duplicate content at granular level
-        - More computationally efficient than full text comparison
-        - Identifies specific plagiarized passages
+        Uses efficient hash-based fingerprinting algorithm for granular plagiarism detection.
         
         #### 3. **Multi-Level Novelty Detection**
-        - Analyzes novelty at sentence, paragraph, and document levels
-        - Distinguishes between novel and redundant content
-        - Provides detailed attribution for each sentence
-        - Reduces false positives through semantic understanding
+        Analyzes novelty at sentence, paragraph, and document levels.
         
         #### 4. **Intrinsic Plagiarism Detection**
-        - Detects plagiarism without external reference documents
-        - Identifies style inconsistencies within the submission
-        - Useful for detecting copy-paste from diverse sources
-        - Complements extrinsic detection methods
+        Detects plagiarism without external reference documents by identifying style inconsistencies.
         
-        #### 5. **OCR Integration**
-        - Supports handwritten and printed document analysis
-        - Enables plagiarism detection for physical submissions
-        - Multilingual text extraction capability
+        #### 5. **Multi-Format Support**
+        Supports PDF, DOCX, and image inputs with OCR capability.
         
         ### 🔬 Technical Architecture
         
-        - **Embedding Models**: Multilingual transformer models for semantic understanding
+        - **Embedding Models**: Multilingual transformer models
         - **Cross-Encoders**: Reranking for improved accuracy
-        - **Stylometry**: Statistical and linguistic feature extraction
-        - **Fingerprinting**: Winnowing algorithm for efficient matching
-        - **OCR**: EasyOCR with deep learning-based text recognition
-        
-        ### 📊 Evaluation Metrics
-        
-        - Semantic similarity (bi-encoder + cross-encoder)
-        - Fingerprint matching coefficient
-        - Novelty ratio
-        - Stylometric consistency score
-        - Internal style variation
-        - Combined weighted plagiarism score
+        - **Stylometry**: Statistical linguistic feature extraction
+        - **Fingerprinting**: Winnowing algorithm
+        - **OCR**: EasyOCR with deep learning
         
         ### 🚀 Why This is Novel
         
-        Unlike existing tools that rely solely on:
-        - Simple text matching (Turnitin, Copyscape)
-        - Pure LLM-based similarity (ChatGPT detection tools)
-        
-        This system combines:
-        - **Semantic** understanding (what the text means)
-        - **Syntactic** analysis (how the text is written)
-        - **Stylometric** profiling (who likely wrote it)
-        - **Structural** fingerprinting (efficient pattern matching)
-        - **Novelty** quantification (what's new vs redundant)
-        
-        This multi-faceted approach significantly reduces false positives and provides
-        educators with detailed, interpretable results for academic integrity assessment.
+        This system combines **semantic** understanding, **syntactic** analysis, 
+        **stylometric** profiling, **structural** fingerprinting, and **novelty** quantification
+        to provide comprehensive, interpretable plagiarism detection results.
         """)
 
 if __name__ == "__main__":

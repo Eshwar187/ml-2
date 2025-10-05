@@ -1,14 +1,13 @@
 streamlit
 sentence-transformers
 transformers
-torch>=2.1.0
-torchvision
+torch
 nltk
 numpy
 scikit-learn
 easyocr
 Pillow
 pandas
-matplotlib
-seaborn
 opencv-python-headless
+PyPDF2
+python-docx
