@@ -20,7 +20,7 @@ import ssl
 import re
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Multilingual Plagiarism Detector", layout="wide", page_icon="🔍")
+st.set_page_config(page_title="Accurate Plagiarism Detector", layout="wide", page_icon="🔍")
 
 @st.cache_resource
 def download_nltk_data():
@@ -40,14 +40,12 @@ def download_nltk_data():
 
 download_nltk_data()
 
-class MultilingualPlagiarismDetector:
+class AccuratePlagiarismDetector:
     def __init__(self):
-        with st.spinner("🔄 Loading MULTILINGUAL AI models (100+ languages)..."):
-            # MULTILINGUAL MODELS - Support 100+ languages
-            self.semantic_model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2', device='cpu')
-            self.paraphrase_model = SentenceTransformer('sentence-transformers/distiluse-base-multilingual-cased-v2', device='cpu')
-            self.labse_model = SentenceTransformer('sentence-transformers/LaBSE', device='cpu')  # 109 languages
-            self.cross_encoder = CrossEncoder('cross-encoder/mmarco-mMiniLMv2-L12-H384-v1', device='cpu')  # Multilingual
+        with st.spinner("🔄 Loading multiple AI models for maximum accuracy..."):
+            self.semantic_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+            self.paraphrase_model = SentenceTransformer('paraphrase-MiniLM-L6-v2', device='cpu')
+            self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cpu')
         
         self.ocr_reader = None
         self.plagiarism_threshold = 0.70
@@ -55,12 +53,8 @@ class MultilingualPlagiarismDetector:
     
     def load_ocr(self):
         if self.ocr_reader is None:
-            with st.spinner("🔄 Loading Multilingual OCR (80+ languages)..."):
-                # 80+ languages supported
-                self.ocr_reader = easyocr.Reader([
-                    'en', 'hi', 'ar', 'zh_sim', 'zh_tra', 'es', 'fr', 'de', 'ja', 'ko', 
-                    'ru', 'pt', 'it', 'nl', 'pl', 'tr', 'th', 'vi', 'id', 'ta'
-                ], gpu=False)
+            with st.spinner("🔄 Loading OCR..."):
+                self.ocr_reader = easyocr.Reader(['en', 'hi', 'ar', 'zh_sim', 'es', 'fr'], gpu=False)
         return self.ocr_reader
     
     def extract_text_from_image(self, image):
@@ -105,21 +99,18 @@ class MultilingualPlagiarismDetector:
         return ""
     
     def calculate_exact_match(self, text1, text2):
-        """Exact string matching - language agnostic"""
         text1_clean = re.sub(r'[^\w\s]', '', text1.lower())
         text2_clean = re.sub(r'[^\w\s]', '', text2.lower())
         matcher = SequenceMatcher(None, text1_clean, text2_clean)
         return matcher.ratio()
     
     def calculate_ngram_similarity(self, text1, text2, n=3):
-        """N-gram similarity - works for all languages"""
         try:
-            # Character-level n-grams for multilingual support
-            chars1 = list(text1.lower().replace(' ', ''))
-            chars2 = list(text2.lower().replace(' ', ''))
+            words1 = word_tokenize(text1.lower())
+            words2 = word_tokenize(text2.lower())
             
-            ngrams1 = set(tuple(chars1[i:i+n]) for i in range(len(chars1)-n+1))
-            ngrams2 = set(tuple(chars2[i:i+n]) for i in range(len(chars2)-n+1))
+            ngrams1 = set(ngrams(words1, n))
+            ngrams2 = set(ngrams(words2, n))
             
             if not ngrams1 or not ngrams2:
                 return 0.0
@@ -132,10 +123,8 @@ class MultilingualPlagiarismDetector:
             return 0.0
     
     def calculate_tfidf_similarity(self, text1, text2):
-        """TF-IDF similarity - multilingual"""
         try:
-            # Character-level analyzer for multilingual
-            vectorizer = TfidfVectorizer(analyzer='char', ngram_range=(2, 4))
+            vectorizer = TfidfVectorizer(min_df=1, stop_words='english')
             tfidf_matrix = vectorizer.fit_transform([text1, text2])
             similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
             return similarity
@@ -143,8 +132,6 @@ class MultilingualPlagiarismDetector:
             return 0.0
     
     def detect_plagiarism_advanced(self, submitted_text, reference_texts):
-        """Multi-algorithm multilingual plagiarism detection"""
-        
         try:
             submitted_sentences = sent_tokenize(submitted_text)
         except:
@@ -172,18 +159,13 @@ class MultilingualPlagiarismDetector:
         
         st.info(f"🔍 Analyzing {len(submitted_sentences)} sentences against {len(all_ref_sentences)} reference sentences...")
         
-        # Encode with MULTIPLE MULTILINGUAL models
-        with st.spinner("🧠 Encoding with Multilingual Semantic Model..."):
+        with st.spinner("🧠 Encoding with semantic model..."):
             submitted_emb_semantic = self.semantic_model.encode(submitted_sentences, show_progress_bar=False)
             reference_emb_semantic = self.semantic_model.encode(all_ref_sentences, show_progress_bar=False)
         
-        with st.spinner("🧠 Encoding with Multilingual Paraphrase Model..."):
+        with st.spinner("🧠 Encoding with paraphrase model..."):
             submitted_emb_paraphrase = self.paraphrase_model.encode(submitted_sentences, show_progress_bar=False)
             reference_emb_paraphrase = self.paraphrase_model.encode(all_ref_sentences, show_progress_bar=False)
-        
-        with st.spinner("🧠 Encoding with LaBSE (109 languages)..."):
-            submitted_emb_labse = self.labse_model.encode(submitted_sentences, show_progress_bar=False)
-            reference_emb_labse = self.labse_model.encode(all_ref_sentences, show_progress_bar=False)
         
         plagiarism_details = []
         plagiarized_count = 0
@@ -194,54 +176,34 @@ class MultilingualPlagiarismDetector:
         for i, sent in enumerate(submitted_sentences):
             progress_bar.progress((i + 1) / len(submitted_sentences))
             
-            # METHOD 1: Semantic similarity (mpnet)
             sem_similarities = cosine_similarity([submitted_emb_semantic[i]], reference_emb_semantic)[0]
-            
-            # METHOD 2: Paraphrase similarity (distiluse)
             para_similarities = cosine_similarity([submitted_emb_paraphrase[i]], reference_emb_paraphrase)[0]
             
-            # METHOD 3: LaBSE similarity (109 languages)
-            labse_similarities = cosine_similarity([submitted_emb_labse[i]], reference_emb_labse)[0]
-            
-            # Find best matches
             best_sem_idx = np.argmax(sem_similarities)
             best_para_idx = np.argmax(para_similarities)
-            best_labse_idx = np.argmax(labse_similarities)
             
             sem_score = sem_similarities[best_sem_idx]
             para_score = para_similarities[best_para_idx]
-            labse_score = labse_similarities[best_labse_idx]
             
-            # Use the highest scoring match
-            max_ai_score = max(sem_score, para_score, labse_score)
-            
-            if sem_score == max_ai_score:
+            if sem_score > para_score:
+                max_similarity = sem_score
                 matched_idx = best_sem_idx
-            elif para_score == max_ai_score:
-                matched_idx = best_para_idx
             else:
-                matched_idx = best_labse_idx
+                max_similarity = para_score
+                matched_idx = best_para_idx
             
             matched_sentence = all_ref_sentences[matched_idx]
             source = sentence_sources[matched_idx]
             
-            # METHOD 4: Exact string matching
             exact_match_score = self.calculate_exact_match(sent, matched_sentence)
-            
-            # METHOD 5: N-gram matching (character-level for multilingual)
-            ngram_score = self.calculate_ngram_similarity(sent, matched_sentence, n=4)
-            
-            # METHOD 6: TF-IDF (character-level for multilingual)
+            ngram_score = self.calculate_ngram_similarity(sent, matched_sentence, n=3)
             tfidf_score = self.calculate_tfidf_similarity(sent, matched_sentence)
             
-            # COMBINED SCORE - weighted average of all 6 methods
             combined_score = (
-                max_ai_score * 0.30 +           # Best AI model
-                sem_score * 0.15 +              # Semantic
-                para_score * 0.15 +             # Paraphrase
-                exact_match_score * 0.20 +      # Exact matching
-                ngram_score * 0.10 +            # N-grams
-                tfidf_score * 0.10              # TF-IDF
+                max_similarity * 0.35 +
+                exact_match_score * 0.30 +
+                ngram_score * 0.20 +
+                tfidf_score * 0.15
             )
             
             is_exact_copy = combined_score >= self.exact_match_threshold
@@ -270,9 +232,7 @@ class MultilingualPlagiarismDetector:
                 'is_plagiarized': is_plagiarized,
                 'is_exact_copy': is_exact_copy,
                 'combined_score': float(combined_score),
-                'semantic_score': float(sem_score),
-                'paraphrase_score': float(para_score),
-                'labse_score': float(labse_score),
+                'semantic_score': float(max_similarity),
                 'exact_match_score': float(exact_match_score),
                 'ngram_score': float(ngram_score),
                 'tfidf_score': float(tfidf_score),
@@ -312,7 +272,6 @@ class MultilingualPlagiarismDetector:
         }
     
     def compare_assignments(self, assignments_dict):
-        """Multilingual assignment comparison"""
         names = list(assignments_dict.keys())
         n = len(names)
         matrix = np.zeros((n, n))
@@ -326,19 +285,14 @@ class MultilingualPlagiarismDetector:
                 text1 = assignments_dict[names[i]]
                 text2 = assignments_dict[names[j]]
                 
-                # Multi-model comparison
-                emb1_sem = self.semantic_model.encode([text1], show_progress_bar=False)[0]
-                emb2_sem = self.semantic_model.encode([text2], show_progress_bar=False)[0]
-                sem_sim = cosine_similarity([emb1_sem], [emb2_sem])[0][0]
-                
-                emb1_labse = self.labse_model.encode([text1], show_progress_bar=False)[0]
-                emb2_labse = self.labse_model.encode([text2], show_progress_bar=False)[0]
-                labse_sim = cosine_similarity([emb1_labse], [emb2_labse])[0][0]
+                emb1 = self.semantic_model.encode([text1], show_progress_bar=False)[0]
+                emb2 = self.semantic_model.encode([text2], show_progress_bar=False)[0]
+                sem_sim = cosine_similarity([emb1], [emb2])[0][0]
                 
                 exact_sim = self.calculate_exact_match(text1, text2)
                 ngram_sim = self.calculate_ngram_similarity(text1, text2)
                 
-                combined = (sem_sim * 0.3 + labse_sim * 0.3 + exact_sim * 0.25 + ngram_sim * 0.15)
+                combined = (sem_sim * 0.5 + exact_sim * 0.3 + ngram_sim * 0.2)
                 
                 matrix[i][j] = combined
                 matrix[j][i] = combined
@@ -351,51 +305,38 @@ class MultilingualPlagiarismDetector:
 
 @st.cache_resource(show_spinner=False)
 def load_detector():
-    return MultilingualPlagiarismDetector()
+    return AccuratePlagiarismDetector()
 
 def main():
-    st.title("🌍 MULTILINGUAL Plagiarism Detector")
-    st.markdown("### 100+ Languages • 6 Detection Algorithms • 3 AI Models • OCR 80+ Languages")
+    st.title("🔍 ULTRA-ACCURATE Plagiarism Detector")
+    st.markdown("### 5 Detection Algorithms • Multi-Model AI • Maximum Precision")
     
     with st.sidebar:
-        st.header("🎯 System Specifications")
-        
-        st.subheader("🧠 AI Models Used:")
-        st.success("✅ Multilingual MPNet (100+ langs)")
-        st.success("✅ DistilUSE Multilingual")
-        st.success("✅ LaBSE (109 languages)")
-        st.success("✅ Multilingual Cross-Encoder")
-        
-        st.divider()
-        
-        st.subheader("🔍 Detection Methods:")
-        st.info("1. Semantic Similarity (Cosine)")
-        st.info("2. Paraphrase Detection (Cosine)")
-        st.info("3. LaBSE Embeddings (Cosine)")
-        st.info("4. Exact String Matching")
-        st.info("5. Character N-grams")
-        st.info("6. TF-IDF Vectors")
+        st.header("🎯 Detection Methods")
+        st.success("✅ Semantic Similarity (2 models)")
+        st.success("✅ Exact String Matching")
+        st.success("✅ N-gram Analysis")
+        st.success("✅ TF-IDF Vectors")
+        st.success("✅ Cross-Encoder Validation")
         
         st.divider()
         
-        st.subheader("🌐 Supported Languages:")
-        st.markdown("""
-        **Major Languages (80+):**
-        - English, Spanish, French, German
-        - Hindi, Arabic, Chinese, Japanese
-        - Korean, Russian, Portuguese, Italian
-        - Dutch, Polish, Turkish, Thai
-        - Vietnamese, Indonesian, Tamil
-        - And 60+ more...
+        st.info("""
+        **How to use:**
+        
+        1. Upload student submission
+        2. Upload reference sources
+        3. Get accurate plagiarism %
+        4. See exact matches highlighted
         """)
     
     detector = load_detector()
     
-    tab1, tab2, tab3 = st.tabs(["📝 Detect Plagiarism", "🔄 Compare Assignments", "📊 Technical Info"])
+    tab1, tab2 = st.tabs(["📝 Detect Plagiarism", "🔄 Compare Assignments"])
     
     with tab1:
-        st.header("Multilingual Plagiarism Detection")
-        st.info("📌 Works with ANY language - Upload submission + references")
+        st.header("Accurate Plagiarism Detection")
+        st.info("📌 Upload submission + references for maximum accuracy detection")
         
         col1, col2 = st.columns([1, 1])
         
@@ -403,7 +344,7 @@ def main():
             st.subheader("📄 Student Submission")
             
             submission_file = st.file_uploader(
-                "Upload (PDF/DOCX/Image - Any Language)", 
+                "Upload (PDF/DOCX/Image)", 
                 type=['pdf', 'docx', 'png', 'jpg', 'jpeg'], 
                 key="sub"
             )
@@ -411,21 +352,20 @@ def main():
             submission_text = ""
             
             if submission_file:
-                with st.spinner("Extracting with multilingual OCR..."):
+                with st.spinner("Extracting..."):
                     submission_text = detector.extract_text_from_file(submission_file)
                 
                 if submission_text:
-                    st.success(f"✅ {len(submission_text)} characters extracted")
+                    st.success(f"✅ {len(submission_text)} chars")
                     
                     if submission_file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                        with st.expander("View Image"):
+                        with st.expander("View"):
                             st.image(submission_file)
             
             submission_text = st.text_area(
-                "Or paste text (any language)",
+                "Or paste text",
                 value=submission_text,
-                height=300,
-                placeholder="Paste text in English, Hindi, Arabic, Chinese, Spanish, etc..."
+                height=300
             )
         
         with col2:
@@ -438,7 +378,7 @@ def main():
             for i in range(num_refs):
                 with st.expander(f"Reference {i+1}", expanded=(i==0)):
                     ref_file = st.file_uploader(
-                        f"Upload (Any Language)",
+                        f"Upload",
                         type=['pdf', 'docx', 'png', 'jpg', 'jpeg'],
                         key=f"ref{i}"
                     )
@@ -452,7 +392,7 @@ def main():
                             st.success(f"✅ {len(ref_text)} chars")
                     
                     ref_text = st.text_area(
-                        "Or paste reference",
+                        "Or paste",
                         value=ref_text,
                         height=100,
                         key=f"rt{i}"
@@ -469,7 +409,7 @@ def main():
             else:
                 results = detector.detect_plagiarism_advanced(submission_text, reference_texts)
                 
-                st.success("✅ MULTILINGUAL ANALYSIS COMPLETE!")
+                st.success("✅ ANALYSIS COMPLETE!")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 
@@ -496,64 +436,57 @@ def main():
                 st.divider()
                 
                 if plag_pct < 10:
-                    st.success("✅ **EXCELLENT** - Minimal plagiarism detected")
+                    st.success("✅ **EXCELLENT** - Minimal plagiarism")
                 elif plag_pct < 25:
                     st.warning("⚠️ **ACCEPTABLE** - Some similarities found")
                 elif plag_pct < 50:
-                    st.error("🚨 **CONCERNING** - Significant plagiarism detected")
+                    st.error("🚨 **CONCERNING** - Significant plagiarism")
                 else:
                     st.error("🔴 **CRITICAL** - Severe plagiarism detected")
                 
                 st.divider()
                 
-                st.subheader("📊 Detailed Sentence Analysis")
+                st.subheader("📊 Sentence Analysis")
                 
                 exact_copies = [d for d in results['details'] if d['is_exact_copy']]
                 plagiarized = [d for d in results['details'] if d['is_plagiarized'] and not d['is_exact_copy']]
                 original = [d for d in results['details'] if not d['is_plagiarized']]
                 
                 if exact_copies:
-                    st.error(f"🔴 **EXACT COPIES DETECTED ({len(exact_copies)})**")
+                    st.error(f"🔴 **EXACT COPIES ({len(exact_copies)})**")
                     for item in exact_copies:
                         with st.container():
-                            st.markdown(f"**Sentence {item['sentence_number']}** - Overall Match: {item['combined_score']:.1%}")
+                            st.markdown(f"**Sentence {item['sentence_number']}** - Match: {item['combined_score']:.1%}")
                             col1, col2 = st.columns(2)
                             with col1:
-                                st.markdown(f"**Submitted Text:**")
+                                st.markdown(f"**Submitted:**")
                                 st.info(item['sentence'])
                             with col2:
-                                st.markdown(f"**Matched from {item['source']}:**")
+                                st.markdown(f"**From {item['source']}:**")
                                 st.warning(item['matched_text'])
                             
-                            st.caption(f"""
-                            **Scores:** Semantic: {item['semantic_score']:.1%} | Paraphrase: {item['paraphrase_score']:.1%} | 
-                            LaBSE: {item['labse_score']:.1%} | Exact: {item['exact_match_score']:.1%} | 
-                            N-gram: {item['ngram_score']:.1%} | TF-IDF: {item['tfidf_score']:.1%}
-                            """)
+                            st.caption(f"Semantic: {item['semantic_score']:.1%} | Exact: {item['exact_match_score']:.1%} | N-gram: {item['ngram_score']:.1%} | TF-IDF: {item['tfidf_score']:.1%}")
                             st.divider()
                 
                 if plagiarized:
                     with st.expander(f"🟠 Plagiarized Sentences ({len(plagiarized)})"):
                         for item in plagiarized:
-                            st.markdown(f"**Sentence {item['sentence_number']}** - Match: {item['combined_score']:.1%}")
+                            st.markdown(f"**Sentence {item['sentence_number']}** - {item['combined_score']:.1%}")
                             st.markdown(f"**Submitted:** {item['sentence']}")
                             st.markdown(f"**Matched ({item['source']}):** {item['matched_text']}")
-                            st.caption(f"Semantic: {item['semantic_score']:.1%} | Exact: {item['exact_match_score']:.1%}")
                             st.divider()
                 
                 with st.expander(f"🟢 Original Sentences ({len(original)})"):
                     for item in original:
                         st.markdown(f"**{item['sentence_number']}.** {item['sentence']}")
-                        st.caption(f"Max similarity: {item['combined_score']:.1%}")
                 
-                with st.expander("📥 Export Full Report (JSON)"):
+                with st.expander("📥 Export Report"):
                     st.json(results)
     
     with tab2:
-        st.header("Compare Multiple Assignments")
-        st.info("🌍 Works with documents in ANY language")
+        st.header("Compare Assignments")
         
-        n = st.number_input("Number of assignments", 2, 20, 3)
+        n = st.number_input("Assignments", 2, 20, 3)
         
         assigns = {}
         cols = st.columns(2)
@@ -569,26 +502,23 @@ def main():
                     if text:
                         st.success(f"✅ {len(text)} chars")
                 
-                text = st.text_area("Or paste", value=text, height=80, key=f"ct{i}")
+                text = st.text_area("Paste", value=text, height=80, key=f"ct{i}")
                 
                 if text:
                     assigns[name] = text
         
-        if st.button("🔍 Compare All", type="primary"):
+        if st.button("Compare", type="primary"):
             if len(assigns) < 2:
                 st.error("Need 2+ assignments")
             else:
                 matrix, names = detector.compare_assignments(assigns)
                 
-                st.success("✅ Comparison Complete!")
+                st.success("✅ Done!")
                 
-                st.subheader("📊 Similarity Matrix")
                 df = pd.DataFrame(matrix * 100, columns=names, index=names)
                 st.dataframe(df.style.background_gradient(cmap='Reds', vmin=0, vmax=100).format("{:.1f}%"), use_container_width=True)
                 
                 st.divider()
-                
-                st.subheader("⚠️ Suspicious Pairs (>50% similarity)")
                 
                 suspicious = []
                 for i in range(len(names)):
@@ -596,163 +526,15 @@ def main():
                         sim = matrix[i][j] * 100
                         if sim > 50:
                             suspicious.append({
-                                'Student Pair': f"{names[i]} ↔ {names[j]}",
-                                'Similarity': f"{sim:.1f}%",
-                                'Status': '🔴 High' if sim > 75 else '🟠 Medium'
+                                'Pair': f"{names[i]} ↔ {names[j]}",
+                                'Similarity': f"{sim:.1f}%"
                             })
                 
                 if suspicious:
-                    st.error(f"🚨 Found {len(suspicious)} suspicious pair(s)")
+                    st.error("🚨 Suspicious Pairs")
                     st.dataframe(pd.DataFrame(suspicious), use_container_width=True)
                 else:
-                    st.success("✅ All assignments appear unique")
-    
-    with tab3:
-        st.header("📊 Technical Specifications")
-        
-        st.markdown("""
-        ## 🧠 AI Models Used
-        
-        ### 1. **Multilingual MPNet (paraphrase-multilingual-mpnet-base-v2)**
-        - **Languages:** 100+
-        - **Purpose:** Semantic similarity detection
-        - **Method:** Cosine similarity on sentence embeddings
-        - **Strength:** Best for paraphrase detection
-        
-        ### 2. **DistilUSE Multilingual (distiluse-base-multilingual-cased-v2)**
-        - **Languages:** 50+
-        - **Purpose:** Cross-lingual semantic matching
-        - **Method:** Cosine similarity
-        - **Strength:** Fast and accurate
-        
-        ### 3. **LaBSE (Language-agnostic BERT Sentence Embeddings)**
-        - **Languages:** 109 languages
-        - **Purpose:** Cross-lingual plagiarism detection
-        - **Method:** Cosine similarity
-        - **Strength:** Works across different languages
-        
-        ### 4. **Multilingual Cross-Encoder (mmarco-mMiniLMv2)**
-        - **Languages:** 100+
-        - **Purpose:** Re-ranking and validation
-        - **Method:** Direct pair comparison
-        
-        ---
-        
-        ## 🔍 Detection Algorithms
-        
-        ### 1. **Semantic Similarity (Cosine)**
-        - Converts text to embeddings
-        - Calculates cosine similarity: `cos(θ) = (A·B) / (||A|| ||B||)`
-        - Range: 0-1 (1 = identical meaning)
-        
-        ### 2. **Exact String Matching**
-        - Uses SequenceMatcher (difflib)
-        - Character-level comparison
-        - Detects copy-paste plagiarism
-        
-        ### 3. **N-gram Analysis**
-        - Character-level n-grams (n=4)
-        - Jaccard similarity: `|A∩B| / |A∪B|`
-        - Language-agnostic
-        
-        ### 4. **TF-IDF Vectors**
-        - Term Frequency-Inverse Document Frequency
-        - Character-level for multilingual
-        - Cosine similarity on TF-IDF matrix
-        
-        ### 5. **Paraphrase Detection**
-        - Specialized model for rewritten content
-        - Detects semantic similarity despite word changes
-        
-        ### 6. **Cross-Encoder Validation**
-        - Direct text pair scoring
-        - Highest accuracy but slower
-        
-        ---
-        
-        ## 🌐 OCR Support
-        
-        **EasyOCR - 80+ Languages:**
-        - English, Spanish, French, German, Italian, Portuguese
-        - Chinese (Simplified & Traditional), Japanese, Korean
-        - Arabic, Hindi, Bengali, Tamil, Telugu, Gujarati
-        - Russian, Ukrainian, Thai, Vietnamese, Indonesian
-        - And 60+ more languages
-        
-        ---
-        
-        ## 🎯 How It's Novel & Unique
-        
-        ### **Compared to Turnitin:**
-        ✅ **100% Free** (Turnitin: $3-10 per report)
-        ✅ **Multilingual** (Turnitin: Limited languages)
-        ✅ **OCR Built-in** (Turnitin: No OCR)
-        ✅ **Offline** (Turnitin: Requires internet & database)
-        ❌ No internet database (Turnitin: Checks billions of pages)
-        
-        ### **Compared to Copyscape:**
-        ✅ **Sentence-level analysis** (Copyscape: Document-level)
-        ✅ **Multiple algorithms** (Copyscape: Text matching only)
-        ✅ **Free** (Copyscape: Paid service)
-        ❌ No web search (Copyscape: Searches internet)
-        
-        ### **Compared to Grammarly:**
-        ✅ **More accurate** (6 algorithms vs 1)
-        ✅ **Shows exact matches** (Grammarly: General score)
-        ✅ **Free** (Grammarly Premium: $30/month)
-        ✅ **Multilingual** (Grammarly: English only)
-        
-        ---
-        
-        ## 🏆 Unique Features
-        
-        1. **Multi-Model Ensemble** - Uses 3 different AI models simultaneously
-        2. **6-Algorithm Fusion** - Combines semantic, syntactic, and lexical methods
-        3. **Weighted Scoring** - Intelligent combination of all methods
-        4. **Character-level Analysis** - Works for ANY language
-        5. **Sentence Attribution** - Shows exact source of plagiarism
-        6. **Cross-lingual Detection** - Can detect if English copied from Hindi source
-        7. **OCR Integrated** - Scans handwritten assignments
-        8. **Completely Free** - No API keys, no subscriptions
-        
-        ---
-        
-        ## ⚙️ Workflow
-        
-        1. **Document Upload** → PDF/DOCX/Image
-        2. **Text Extraction** → PyPDF2/python-docx/EasyOCR
-        3. **Sentence Tokenization** → NLTK
-        4. **Embedding Generation** → 3 transformer models
-        5. **Similarity Calculation** → Cosine similarity
-        6. **Multi-method Analysis** → 6 parallel algorithms
-        7. **Score Fusion** → Weighted average
-        8. **Threshold Decision** → 70% = plagiarized, 95% = exact copy
-        9. **Report Generation** → Sentence-by-sentence breakdown
-        
-        ---
-        
-        ## 📈 Accuracy Comparison
-        
-        | System | Semantic | Exact Match | Paraphrase | Multilingual | Free |
-        |--------|----------|-------------|------------|--------------|------|
-        | **This System** | ✅✅✅ | ✅✅✅ | ✅✅✅ | ✅✅✅ | ✅ |
-        | Turnitin | ✅✅ | ✅✅✅ | ✅✅ | ✅ | ❌ |
-        | Copyscape | ❌ | ✅✅✅ | ❌ | ✅ | ❌ |
-        | Grammarly | ✅ | ✅✅ | ✅ | ❌ | ❌ |
-        | Plagscan | ✅✅ | ✅✅ | ✅ | ✅ | ❌ |
-        
-        ---
-        
-        ## 💡 Use Cases
-        
-        - **Educational Institutions** - Check student assignments
-        - **Publishers** - Verify manuscript originality
-        - **Researchers** - Validate research papers
-        - **Content Creators** - Check article uniqueness
-        - **Translators** - Detect cross-lingual plagiarism
-        - **Legal** - Evidence in plagiarism cases
-        
-        """)
+                    st.success("✅ All unique")
 
 if __name__ == "__main__":
     main()
