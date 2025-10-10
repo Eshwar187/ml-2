@@ -11,3 +11,4 @@ pandas
 opencv-python-headless
 PyPDF2
 python-docx
+langdetect
