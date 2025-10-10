@@ -41,9 +41,18 @@ class PlagiarismDetectorV4:
     
     def load_ocr(self):
         if self.ocr_reader is None:
-            with st.spinner("🔄 Loading OCR..."):
-                self.ocr_reader = easyocr.Reader(['en', 'hi', 'ar', 'zh_sim', 'ta', 'te'], gpu=False)
+            try:
+                with st.spinner("🔄 Loading OCR (first time only)..."):
+                    
+                    langs = ['en', 'hi', 'ar', 'ch_sim', 'ta', 'te']  # ch_sim NOT zh_sim!
+                    self.ocr_reader = easyocr.Reader(langs, gpu=False, verbose=False)
+                    st.success(f"✅ OCR loaded for: {', '.join(langs)}")
+            except Exception as e:
+                st.error(f"❌ OCR failed: {str(e)}")
+                st.info("Continuing without OCR. You can still use PDF/DOCX/text.")
+                return None
         return self.ocr_reader
+
     
     def detect_language(self, text):
         """Detect language of text"""
